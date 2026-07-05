@@ -88,6 +88,51 @@ def list_coupons(limit: int = 50) -> list:
     return coupons
 
 
+def _empty_bucket() -> dict:
+    return {"pick_hits": 0, "pick_total": 0, "coupon_wins": 0, "coupon_total": 0}
+
+
+def _finalize(bucket: dict) -> dict:
+    """Add rate fields (None when no data) to a raw count bucket."""
+    pt, ct = bucket["pick_total"], bucket["coupon_total"]
+    bucket["pick_rate"] = round(bucket["pick_hits"] / pt, 4) if pt else None
+    bucket["coupon_rate"] = round(bucket["coupon_wins"] / ct, 4) if ct else None
+    return bucket
+
+
+def compute_stats(coupons: list) -> dict:
+    """Hit statistics over settled coupons: overall + per mode.
+
+    Pick-level: each prediction counts. Coupon-level: a coupon 'wins' only if
+    every one of its picks hit (iddaa logic). Unsettled coupons are ignored.
+    Caller is responsible for date-windowing the input (e.g. last 30 days).
+    """
+    overall = _empty_bucket()
+    by_mode: dict = {}
+
+    for c in coupons:
+        # DB kayıtları 'settled_at' (str), statik site 'settled' (bool) kullanır.
+        is_settled = c.get("settled_at") or c.get("settled")
+        if not is_settled or not c.get("picks"):
+            continue
+        picks = c["picks"]
+        hits = sum(1 for p in picks if p.get("hit"))
+        won = hits == len(picks)
+
+        mode = c.get("mode", "?")
+        bucket = by_mode.setdefault(mode, _empty_bucket())
+        for target in (overall, bucket):
+            target["pick_hits"] += hits
+            target["pick_total"] += len(picks)
+            target["coupon_wins"] += 1 if won else 0
+            target["coupon_total"] += 1
+
+    return {
+        "overall": _finalize(overall),
+        "by_mode": {m: _finalize(b) for m, b in by_mode.items()},
+    }
+
+
 def settle_pending(get_fixtures_fn) -> int:
     """Evaluate unsettled coupons whose matches have finished.
 

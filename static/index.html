@@ -268,11 +268,19 @@ document.getElementById("historyBtn").addEventListener("click", async () => {
     if (!h.coupons.length) {
       historyBox.innerHTML = '<p class="note">Henüz kayıtlı kupon yok. Bir kupon oluşturun!</p>'; return;
     }
-    const s = h.stats;
-    const summary = s.total_picks
-      ? `<p class="totals">Genel isabet: ${s.total_hits}/${s.total_picks} tahmin
-         (${(s.hit_rate*100).toFixed(0)}%) · ${s.settled_coupons} sonuçlanmış kupon</p>`
-      : '<p class="note">Sonuçlanmış kupon yok — maçlar bitince otomatik değerlendirilir.</p>';
+    const ov = h.stats.overall || {};
+    const modeName = { safe:"🛡 Garanti", balanced:"⚖️ Dengeli", value:"🔥 Cesur" };
+    let summary;
+    if (ov.pick_total) {
+      const modeLines = Object.entries(h.stats.by_mode || {}).map(([m,b]) =>
+        `<div class="row"><span>${modeName[m]||m}</span><span>${b.pick_hits}/${b.pick_total} (${(b.pick_rate*100).toFixed(0)}%) · kupon ${b.coupon_wins}/${b.coupon_total}</span></div>`).join("");
+      summary = `<div class="coupon"><div class="meta">📈 İsabet İstatistiği</div><div class="pred">
+        <div class="row"><span class="star">Genel tahmin isabeti</span><span class="star">${ov.pick_hits}/${ov.pick_total} (${(ov.pick_rate*100).toFixed(0)}%)</span></div>
+        <div class="row"><span>Tam tutan kupon</span><span>${ov.coupon_wins}/${ov.coupon_total} (${ov.coupon_rate!=null?(ov.coupon_rate*100).toFixed(0):"—"}%)</span></div>
+        ${modeLines}</div></div>`;
+    } else {
+      summary = '<p class="note">Sonuçlanmış kupon yok — maçlar bitince otomatik değerlendirilir.</p>';
+    }
     const items = h.coupons.map(c => {
       const rows = c.picks.map(p => {
         const icon = p.hit === true ? "✅" : p.hit === false ? "❌" : "⏳";

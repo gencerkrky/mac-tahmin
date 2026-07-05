@@ -78,6 +78,28 @@ function couponHTML(c) {
     Birleşik isabet: ${pct(c.combined_probability)}</div></div>`;
 }
 
+const MODE_LABELS_FULL = { safe:"🛡 Garanti", balanced:"⚖️ Dengeli", value:"🔥 Cesur" };
+
+function buildStatsHTML(s) {
+  const ov = s.overall || {};
+  if (!ov.pick_total)
+    return '<p class="note">Henüz sonuçlanmış kupon yok — maçlar bitince otomatik değerlendirilir.</p>';
+  const line = (b) => {
+    const pr = b.pick_rate != null ? `${(b.pick_rate*100).toFixed(0)}%` : "—";
+    const cr = b.coupon_rate != null ? `${(b.coupon_rate*100).toFixed(0)}%` : "—";
+    return `<div class="row"><span>Tahmin isabeti</span>
+              <span class="star">${b.pick_hits}/${b.pick_total} (${pr})</span></div>
+            <div class="row"><span>Tam tutan kupon</span>
+              <span>${b.coupon_wins}/${b.coupon_total} (${cr})</span></div>`;
+  };
+  let html = `<div class="coupon"><div class="meta">Genel (tüm modlar)</div><div class="pred">${line(ov)}</div></div>`;
+  for (const [mode, b] of Object.entries(s.by_mode || {})) {
+    html += `<div class="coupon"><div class="meta">${MODE_LABELS_FULL[mode]||mode}</div>
+             <div class="pred">${line(b)}</div></div>`;
+  }
+  return html;
+}
+
 // "Ev sahibi/Deplasman kazanır" yerine takım adı.
 function pickLabel(bp, f) {
   if (bp.market === "match_result" && (bp.selection === "home" || bp.selection === "away")) {
@@ -171,14 +193,16 @@ async function main() {
   }
   const gen = new Date(d.generated_at).toLocaleString("tr-TR");
   const s = d.stats;
-  const acc = s.total_picks
-    ? ` · Genel isabet: ${s.total_hits}/${s.total_picks} (${(s.hit_rate*100).toFixed(0)}%)`
+  const ov = (s.overall) || {};
+  const acc = ov.pick_total
+    ? ` · Son ${s.window_days||30} gün isabet: ${(ov.pick_rate*100).toFixed(0)}%`
     : "";
   document.getElementById("genInfo").textContent =
     `Son güncelleme: ${gen} · Her sabah otomatik yenilenir${acc} · İstatistiksel tahmindir, kesinlik garanti etmez.`;
 
   const coupons = d.coupons.map(couponHTML).join("") || '<p class="note">Bugün kupon oluşturulamadı.</p>';
   const historyItems = d.history.map(couponHTML).join("") || '<p class="note">Henüz geçmiş yok.</p>';
+  const statsHTML = buildStatsHTML(s);
 
   const tabs = d.days.map((day,i) =>
     `<button data-i="${i}" class="${i===0?"active":""}">${i===0?"Bugün":"Yarın"} (${day.date})</button>`).join("");
@@ -196,7 +220,8 @@ async function main() {
      <div class="section active" id="sec-coupons"><h2>🎫 Günün Kuponları (Futbol)</h2>${coupons}</div>
      <div class="section" id="sec-football"><h2>⚽ Futbol Bülteni</h2><div class="tabs">${tabs}</div><div id="day"></div></div>
      <div class="section" id="sec-basketball"><h2>🏀 Basketbol Bülteni</h2><div class="tabs" id="bballTabs">${bballTabs}</div><div id="bballDay"></div></div>
-     <div class="section" id="sec-history"><h2>📜 Geçmiş & İsabet</h2>${historyItems}</div>`;
+     <div class="section" id="sec-history"><h2>📈 Son ${s.window_days||30} Gün İsabet</h2>${statsHTML}
+       <h2>📜 Kupon Geçmişi</h2>${historyItems}</div>`;
 
   // Üst sekme geçişi: sadece seçilen bölümü göster.
   document.querySelectorAll(".mainTabs button").forEach(btn =>

@@ -84,3 +84,52 @@ def test_settle_skips_unfinished_matches():
     save_coupon("2026-07-07", "safe", [_pick()], 1.67, 0.6)
     settle_pending(_fixtures_ft(0, 0, status="NS"))   # maç oynanmadı
     assert list_coupons()[0]["settled_at"] is None    # beklemede kalır
+
+
+# --- istatistik penceresi ---
+
+from store import compute_stats
+
+
+def _settled_coupon(mode, hits, total):
+    """total maç, hits tanesi tutmuş bir sonuçlanmış kupon sözlüğü."""
+    picks = [{"hit": i < hits} for i in range(total)]
+    return {"mode": mode, "settled_at": "2026-07-07T00:00:00Z",
+            "hit_count": hits, "picks": picks}
+
+
+def test_compute_stats_pick_and_coupon_level():
+    coupons = [
+        _settled_coupon("safe", 3, 3),      # tam tuttu (kupon kazandı)
+        _settled_coupon("safe", 2, 3),      # 2/3 (kupon kaybetti)
+        _settled_coupon("value", 0, 2),     # hiç
+    ]
+    stats = compute_stats(coupons)
+    overall = stats["overall"]
+    # Tahmin bazında: (3+2+0) / (3+3+2) = 5/8
+    assert overall["pick_hits"] == 5
+    assert overall["pick_total"] == 8
+    assert overall["pick_rate"] == pytest.approx(5/8, abs=0.001)
+    # Kupon bazında: 3 kupondan 1'i tam tuttu
+    assert overall["coupon_wins"] == 1
+    assert overall["coupon_total"] == 3
+
+
+def test_compute_stats_per_mode():
+    coupons = [_settled_coupon("safe", 3, 3), _settled_coupon("value", 1, 4)]
+    stats = compute_stats(coupons)
+    assert stats["by_mode"]["safe"]["pick_rate"] == pytest.approx(1.0)
+    assert stats["by_mode"]["value"]["pick_rate"] == pytest.approx(0.25)
+
+
+def test_compute_stats_ignores_unsettled():
+    coupons = [_settled_coupon("safe", 2, 2),
+               {"mode": "safe", "settled_at": None, "picks": [{}, {}]}]
+    stats = compute_stats(coupons)
+    assert stats["overall"]["pick_total"] == 2      # beklemedeki sayılmaz
+
+
+def test_compute_stats_empty():
+    stats = compute_stats([])
+    assert stats["overall"]["pick_total"] == 0
+    assert stats["overall"]["pick_rate"] is None

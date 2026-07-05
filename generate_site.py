@@ -21,7 +21,11 @@ from api_client import (get_basketball_fixtures, get_basketball_form,
 from app import (COUPON_MODES, DEFAULT_COUPON_SIZE, MAX_COUPON_CANDIDATES,
                  UPCOMING_STATUSES, pick_top_predictions, predict_fixture)
 from basketball import predict_basketball
-from store import pick_hit
+from store import compute_stats, pick_hit
+
+# Accuracy window: only coupons from the last N days count toward the shown
+# hit-rate, so the figure reflects the model's recent performance.
+STATS_WINDOW_DAYS = 30
 
 OUTPUT_DIR = Path("public")
 HISTORY_PATH = OUTPUT_DIR / "history.json"
@@ -155,9 +159,12 @@ def main() -> None:
     coupons = generate_daily_coupons(today.isoformat(), history)
     bulletin = build_bulletin(today)
 
-    settled = [c for c in history if c.get("settled")]
-    total_picks = sum(len(c["picks"]) for c in settled)
-    total_hits = sum(c.get("hit_count") or 0 for c in settled)
+    # Son STATS_WINDOW_DAYS güne düşen kuponlarla isabet istatistiği.
+    cutoff = (today - timedelta(days=STATS_WINDOW_DAYS)).isoformat()
+    recent = [c for c in history if c["date"] >= cutoff]
+    stats = compute_stats(recent)
+    stats["window_days"] = STATS_WINDOW_DAYS
+    stats["settled_coupons"] = stats["overall"]["coupon_total"]
 
     data = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -165,12 +172,7 @@ def main() -> None:
         "basketball": build_basketball(today),
         "coupons": coupons,
         "history": sorted(history, key=lambda c: c["date"], reverse=True)[:60],
-        "stats": {
-            "settled_coupons": len(settled),
-            "total_picks": total_picks,
-            "total_hits": total_hits,
-            "hit_rate": round(total_hits / total_picks, 4) if total_picks else None,
-        },
+        "stats": stats,
     }
 
     (OUTPUT_DIR / "data.json").write_text(

@@ -299,18 +299,8 @@ def history():
         app.logger.error("Sonuçlandırma hatası: %s", exc)
 
     coupons = store.list_coupons()
-    settled = [c for c in coupons if c["settled_at"]]
-    total_picks = sum(len(c["picks"]) for c in settled)
-    total_hits = sum(c["hit_count"] for c in settled)
-    return jsonify({
-        "coupons": coupons,
-        "stats": {
-            "settled_coupons": len(settled),
-            "total_picks": total_picks,
-            "total_hits": total_hits,
-            "hit_rate": round(total_hits / total_picks, 4) if total_picks else None,
-        },
-    })
+    stats = store.compute_stats(coupons)
+    return jsonify({"coupons": coupons, "stats": stats})
 
 
 if __name__ == "__main__":
