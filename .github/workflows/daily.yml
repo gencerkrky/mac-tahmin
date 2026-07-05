@@ -1,0 +1,37 @@
+name: Günlük Kupon
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # her sabah 06:00 UTC = 09:00 TR
+  workflow_dispatch:        # elle de tetiklenebilir
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bağımlılıkları kur
+        run: pip install -r requirements.txt
+
+      - name: Önceki geçmişi indir (isabet takibi süreklilik için)
+        run: |
+          mkdir -p public
+          curl -sf "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/history.json" \
+            -o public/history.json || echo "İlk çalıştırma: geçmiş yok"
+
+      - name: Siteyi üret
+        run: python generate_site.py
+
+      - name: GitHub Pages'e yayınla
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
