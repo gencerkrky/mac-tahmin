@@ -54,7 +54,9 @@
     <option value="value">🔥 Cesur (2.00+)</option>
   </select></label>
   <button class="primary" id="couponBtn">🎫 En Emin Kuponu Oluştur</button>
+  <button id="historyBtn">📜 Geçmiş & İsabet</button>
 </div>
+<div id="history" style="display:none"></div>
 <p class="note">Olasılıklar Poisson modelinin tahminidir; kesinlik garanti etmez.
 Oranlar modelin <em>adil oranlarıdır</em>, bahis şirketi oranı değildir.</p>
 
@@ -183,6 +185,38 @@ document.getElementById("couponBtn").addEventListener("click", async () => {
       <div class="totals">Toplam adil oran: <span class="odds">${c.total_odds}</span> ·
       Birleşik isabet: ${pct(c.combined_probability)}</div>${skipped}`;
   } catch (e) { couponBox.innerHTML = `<p class="err">${e.message}</p>`; }
+});
+
+const historyBox = document.getElementById("history");
+const MODE_LABELS = { safe: "🛡 Garanti", balanced: "⚖️ Dengeli", value: "🔥 Cesur" };
+
+document.getElementById("historyBtn").addEventListener("click", async () => {
+  if (historyBox.style.display === "block") { historyBox.style.display = "none"; return; }
+  historyBox.style.display = "block";
+  historyBox.innerHTML = '<span class="spin">Geçmiş yükleniyor ve sonuçlar kontrol ediliyor…</span>';
+  try {
+    const h = await getJSON("/api/history");
+    if (!h.coupons.length) {
+      historyBox.innerHTML = '<p class="note">Henüz kayıtlı kupon yok. Bir kupon oluşturun!</p>'; return;
+    }
+    const s = h.stats;
+    const summary = s.total_picks
+      ? `<p class="totals">Genel isabet: ${s.total_hits}/${s.total_picks} tahmin
+         (${(s.hit_rate*100).toFixed(0)}%) · ${s.settled_coupons} sonuçlanmış kupon</p>`
+      : '<p class="note">Sonuçlanmış kupon yok — maçlar bitince otomatik değerlendirilir.</p>';
+    const items = h.coupons.map(c => {
+      const rows = c.picks.map(p => {
+        const icon = p.hit === true ? "✅" : p.hit === false ? "❌" : "⏳";
+        const score = p.final_score ? ` <span class="odds">(${p.final_score})</span>` : "";
+        return `<div class="row"><span>${icon} ${p.fixture.home.name} — ${p.fixture.away.name}${score}</span>
+          <span>${p.best_pick.label} @${p.best_pick.fair_odds}</span></div>`;
+      }).join("");
+      const status = c.settled_at ? `${c.hit_count}/${c.picks.length} tuttu` : "beklemede";
+      return `<div class="match"><div class="meta">${c.date} · ${MODE_LABELS[c.mode] || c.mode} ·
+        oran ${c.total_odds} · ${status}</div><div class="pred">${rows}</div></div>`;
+    }).join("");
+    historyBox.innerHTML = summary + items;
+  } catch (e) { historyBox.innerHTML = `<p class="err">${e.message}</p>`; }
 });
 
 dateSel.addEventListener("change", loadFixtures);

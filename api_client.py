@@ -147,6 +147,65 @@ def _score_value(competitor: dict) -> float:
     return float(score)
 
 
+def get_h2h(league_slug: str, event_id: str, home_team_id: str) -> dict:
+    """Head-to-head goal averages between the two sides of a fixture.
+
+    ESPN's summary endpoint lists past meetings from one team's perspective
+    ('vs' = that team at home, '@' = away). A failed/malformed response is a
+    prediction-quality loss, not a fatal error — return zero meetings so the
+    model falls back to pure form.
+    """
+    cache_key = ("h2h", event_id)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    empty = {"home_scored_avg": 0.0, "away_scored_avg": 0.0, "meetings": 0}
+    try:
+        payload = _get(f"{API_BASE_URL}/{league_slug}/summary", {"event": event_id})
+    except ApiError:
+        return empty
+
+    groups = payload.get("headToHeadGames") or []
+    if not groups:
+        _cache[cache_key] = empty
+        return empty
+
+    group = groups[0]
+    group_team_id = str(group.get("team", {}).get("id", ""))
+    group_is_home_side = group_team_id == str(home_team_id)
+
+    team_goals = opp_goals = 0.0
+    meetings = 0
+    for game in group.get("events", []):
+        try:
+            hg = float(game["homeTeamScore"])
+            ag = float(game["awayTeamScore"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # 'vs' → group team hosted this meeting, '@' → played away.
+        if game.get("atVs") == "vs":
+            team_goals += hg
+            opp_goals += ag
+        else:
+            team_goals += ag
+            opp_goals += hg
+        meetings += 1
+
+    if meetings == 0:
+        _cache[cache_key] = empty
+        return empty
+
+    team_avg = round(team_goals / meetings, 3)
+    opp_avg = round(opp_goals / meetings, 3)
+    h2h = {
+        "home_scored_avg": team_avg if group_is_home_side else opp_avg,
+        "away_scored_avg": opp_avg if group_is_home_side else team_avg,
+        "meetings": meetings,
+    }
+    _cache[cache_key] = h2h
+    return h2h
+
+
 def get_team_form(team_id: str, league_slug: str) -> dict:
     """Scoring/conceding averages over the team's last finished matches."""
     cache_key = ("form", league_slug, team_id)

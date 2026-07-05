@@ -19,6 +19,34 @@ AWAY_FACTOR = 0.95
 # Scoreline matrix upper bound. P(goals > 8) is negligible (<0.1%).
 MAX_GOALS = 8
 
+# Shrinkage prior weight: a form average based on n matches is blended with
+# the league average as n/(n+K). Small samples (cup qualifiers, season start)
+# no longer produce extreme, overconfident expected goals.
+SHRINKAGE_K = 5
+
+# How much head-to-head history can pull the form average at full strength.
+H2H_MAX_WEIGHT = 0.25
+# Meetings needed for full H2H weight; fewer meetings scale linearly.
+H2H_FULL_MEETINGS = 4
+
+
+def shrink_to_league_avg(avg: float, matches: int) -> float:
+    """Pull a small-sample average toward the league average (Bayes shrinkage)."""
+    weight = matches / (matches + SHRINKAGE_K)
+    return round(weight * avg + (1 - weight) * LEAGUE_AVG_GOALS, 3)
+
+
+def blend_with_h2h(form_avg: float, h2h_avg: float, meetings: int) -> float:
+    """Mix head-to-head scoring history into the form average.
+
+    H2H is a weak but real signal (styles that consistently trouble each
+    other); its weight grows with the number of meetings and is capped.
+    """
+    if meetings <= 0:
+        return form_avg
+    weight = H2H_MAX_WEIGHT * min(1.0, meetings / H2H_FULL_MEETINGS)
+    return round((1 - weight) * form_avg + weight * h2h_avg, 3)
+
 
 def _poisson_pmf(lam: float, k: int) -> float:
     """P(X = k) for X ~ Poisson(lam)."""

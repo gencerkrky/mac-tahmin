@@ -96,3 +96,32 @@ def test_best_pick_min_odds_filters_low_odds():
 def test_best_pick_min_odds_none_when_impossible():
     p = predict(1.0, 1.0, 1.0, 1.0)
     assert best_pick(p, min_odds=100.0) is None
+
+
+from poisson import blend_with_h2h, shrink_to_league_avg
+
+
+def test_shrink_pulls_small_samples_toward_league_avg():
+    # 1 maçlık uçuk ortalama (5.0) lig ortalamasına ciddi yaklaşmalı.
+    shrunk = shrink_to_league_avg(5.0, matches=1)
+    assert LEAGUE_AVG_GOALS < shrunk < 5.0
+    assert shrunk < 2.5                          # güçlü çekim
+
+
+def test_shrink_keeps_large_samples_mostly_intact():
+    shrunk = shrink_to_league_avg(2.0, matches=10)
+    assert abs(shrunk - 2.0) < abs(shrink_to_league_avg(2.0, matches=1) - 2.0)
+    assert shrunk > 1.7                          # 10 maçlık veri ağır basar
+
+
+def test_shrink_no_matches_returns_league_avg():
+    assert shrink_to_league_avg(0.0, matches=0) == LEAGUE_AVG_GOALS
+
+
+def test_blend_with_h2h_moves_toward_h2h():
+    blended = blend_with_h2h(form_avg=1.0, h2h_avg=3.0, meetings=5)
+    assert 1.0 < blended < 3.0
+
+
+def test_blend_with_h2h_no_meetings_returns_form():
+    assert blend_with_h2h(form_avg=1.4, h2h_avg=0.0, meetings=0) == 1.4

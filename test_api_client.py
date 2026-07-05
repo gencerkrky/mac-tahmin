@@ -107,6 +107,36 @@ def test_get_team_form_no_data_falls_back(monkeypatch):
     assert form["scored_avg"] == form["conceded_avg"] > 0  # league-average profile
 
 
+def _h2h_payload():
+    # ESPN summary headToHeadGames: group team is one side; atVs 'vs' = home.
+    return {"headToHeadGames": [{
+        "team": {"id": "10"},
+        "events": [
+            # takım 10 evinde 3-1 kazandı → 10: 3 gol, rakip: 1
+            {"atVs": "vs", "homeTeamScore": "3", "awayTeamScore": "1"},
+            # takım 10 deplasmanda 0-2 kazandı → 10: 2 gol, rakip: 0
+            {"atVs": "@", "homeTeamScore": "0", "awayTeamScore": "2"},
+        ],
+    }]}
+
+
+def test_get_h2h_averages(monkeypatch):
+    monkeypatch.setattr(api_client.requests, "get",
+                        lambda *a, **k: FakeResponse(_h2h_payload()))
+    h2h = api_client.get_h2h("swe.1", "999", home_team_id="10")
+    assert h2h["meetings"] == 2
+    assert h2h["home_scored_avg"] == pytest.approx(2.5)   # (3 + 2) / 2
+    assert h2h["away_scored_avg"] == pytest.approx(0.5)   # (1 + 0) / 2
+
+
+def test_get_h2h_failure_returns_empty(monkeypatch):
+    def boom(*a, **k):
+        raise api_client.requests.exceptions.ConnectionError("down")
+    monkeypatch.setattr(api_client.requests, "get", boom)
+    h2h = api_client.get_h2h("swe.1", "999", home_team_id="10")
+    assert h2h["meetings"] == 0                            # sessizce değil: güvenli varsayılan
+
+
 def test_api_error_on_network_failure(monkeypatch):
     def boom(*a, **k):
         raise api_client.requests.exceptions.ConnectionError("down")

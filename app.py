@@ -11,13 +11,15 @@ from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
+import store
 from ai_analysis import AiError, analyze_prediction
-from api_client import ApiError, LEAGUES, get_fixtures, get_team_form
-from poisson import best_pick, predict
+from api_client import ApiError, LEAGUES, get_fixtures, get_h2h, get_team_form
+from poisson import best_pick, blend_with_h2h, predict, shrink_to_league_avg
 
 load_dotenv()
 
 app = Flask(__name__, static_folder="static")
+store.init_db()
 
 # ESPN is quota-free; the cap only bounds coupon latency (2 form calls/match).
 MAX_COUPON_CANDIDATES = 20
@@ -42,9 +44,20 @@ def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
     """
     home_form = get_team_form(fx["home"]["id"], fx["league_slug"])
     away_form = get_team_form(fx["away"]["id"], fx["league_slug"])
+    h2h = get_h2h(fx["league_slug"], fx["fixture_id"], fx["home"]["id"])
+
+    # Small samples get pulled toward the league average, then head-to-head
+    # history nudges both attack (own h2h goals) and defence (opponent's).
+    hs = shrink_to_league_avg(home_form["scored_avg"], home_form["matches"])
+    hc = shrink_to_league_avg(home_form["conceded_avg"], home_form["matches"])
+    as_ = shrink_to_league_avg(away_form["scored_avg"], away_form["matches"])
+    ac = shrink_to_league_avg(away_form["conceded_avg"], away_form["matches"])
+    m = h2h["meetings"]
     prediction = predict(
-        home_form["scored_avg"], home_form["conceded_avg"],
-        away_form["scored_avg"], away_form["conceded_avg"],
+        blend_with_h2h(hs, h2h["home_scored_avg"], m),
+        blend_with_h2h(hc, h2h["away_scored_avg"], m),
+        blend_with_h2h(as_, h2h["away_scored_avg"], m),
+        blend_with_h2h(ac, h2h["home_scored_avg"], m),
     )
     pick = best_pick(prediction, min_odds=min_odds)
     if pick is None:
@@ -165,7 +178,39 @@ def coupon():
     result = pick_top_predictions(analysed, size)
     result["analysed_count"] = len(analysed)
     result["skipped_count"] = max(0, len(upcoming) - len(candidates))
+
+    # Persist for the accuracy tracker; failure to save must not break the UI.
+    if result["picks"]:
+        try:
+            store.save_coupon(date_str, mode, result["picks"],
+                              result["total_odds"], result["combined_probability"])
+        except Exception as exc:
+            app.logger.error("Kupon kaydedilemedi: %s", exc)
+
     return jsonify(result)
+
+
+@app.get("/api/history")
+def history():
+    # Settle anything whose matches have finished, then report.
+    try:
+        store.settle_pending(get_fixtures)
+    except Exception as exc:
+        app.logger.error("Sonuçlandırma hatası: %s", exc)
+
+    coupons = store.list_coupons()
+    settled = [c for c in coupons if c["settled_at"]]
+    total_picks = sum(len(c["picks"]) for c in settled)
+    total_hits = sum(c["hit_count"] for c in settled)
+    return jsonify({
+        "coupons": coupons,
+        "stats": {
+            "settled_coupons": len(settled),
+            "total_picks": total_picks,
+            "total_hits": total_hits,
+            "hit_rate": round(total_hits / total_picks, 4) if total_picks else None,
+        },
+    })
 
 
 if __name__ == "__main__":
