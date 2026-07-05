@@ -41,6 +41,15 @@
   .sportTabs button { background:var(--card); color:var(--text); border:1px solid var(--line);
                       border-radius:8px; padding:.45rem 1rem; cursor:pointer; }
   .sportTabs button.active { background:var(--accent); color:#111; font-weight:600; }
+  /* Üst bölüm sekmeleri (yapışkan) */
+  .mainTabs { position:sticky; top:0; z-index:10; background:var(--bg);
+              display:flex; gap:.4rem; flex-wrap:wrap; padding:.6rem 0; margin-bottom:.5rem;
+              border-bottom:1px solid var(--line); }
+  .mainTabs button { background:var(--card); color:var(--text); border:1px solid var(--line);
+                     border-radius:8px; padding:.5rem .9rem; cursor:pointer; font-size:.95rem; }
+  .mainTabs button.active { background:var(--accent); color:#111; font-weight:700; }
+  .section { display:none; }
+  .section.active { display:block; }
 </style>
 </head>
 <body>
@@ -178,10 +187,26 @@ async function main() {
     `<button data-bi="${i}" class="${i===0?"active":""}">${i===0?"Bugün":"Yarın"} (${day.date})</button>`).join("");
 
   document.getElementById("content").innerHTML =
-    `<h2>🎫 Günün Kuponları (Futbol)</h2>${coupons}
-     <h2>⚽ Futbol Bülteni</h2><div class="tabs">${tabs}</div><div id="day"></div>
-     <h2>🏀 Basketbol Bülteni</h2><div class="tabs" id="bballTabs">${bballTabs}</div><div id="bballDay"></div>
-     <h2>📜 Geçmiş & İsabet</h2>${historyItems}`;
+    `<div class="mainTabs">
+       <button data-sec="coupons" class="active">🎫 Kuponlar</button>
+       <button data-sec="football">⚽ Futbol</button>
+       <button data-sec="basketball">🏀 Basketbol</button>
+       <button data-sec="history">📜 Geçmiş</button>
+     </div>
+     <div class="section active" id="sec-coupons"><h2>🎫 Günün Kuponları (Futbol)</h2>${coupons}</div>
+     <div class="section" id="sec-football"><h2>⚽ Futbol Bülteni</h2><div class="tabs">${tabs}</div><div id="day"></div></div>
+     <div class="section" id="sec-basketball"><h2>🏀 Basketbol Bülteni</h2><div class="tabs" id="bballTabs">${bballTabs}</div><div id="bballDay"></div></div>
+     <div class="section" id="sec-history"><h2>📜 Geçmiş & İsabet</h2>${historyItems}</div>`;
+
+  // Üst sekme geçişi: sadece seçilen bölümü göster.
+  document.querySelectorAll(".mainTabs button").forEach(btn =>
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mainTabs button").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("sec-" + btn.dataset.sec).classList.add("active");
+      window.scrollTo(0, 0);
+    }));
 
   const dayBox = document.getElementById("day");
   document.querySelectorAll(".tabs:not(#bballTabs) button").forEach(btn =>
