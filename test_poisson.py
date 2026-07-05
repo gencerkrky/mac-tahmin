@@ -134,6 +134,39 @@ def test_adjust_for_opponent_average_opponent_unchanged():
     assert v == pytest.approx(2.0)
 
 
+from poisson import predict_from_forms
+
+
+def _mlog(entries):
+    # entries: (scored, conceded, venue) most-recent first
+    return [{"scored": s, "conceded": c, "venue": v, "opponent_id": "x"}
+            for s, c, v in entries]
+
+
+def test_predict_from_forms_none_when_empty_log():
+    assert predict_from_forms([], _mlog([(1, 1, "away")]), 0, 1) is None
+    assert predict_from_forms(_mlog([(1, 1, "home")]), [], 1, 0) is None
+
+
+def test_predict_from_forms_strong_home_favoured():
+    home = _mlog([(3, 0, "home")] * 6)      # evde bol gol, hiç yemiyor
+    away = _mlog([(0, 3, "away")] * 6)      # deplasmanda gol atamıyor, çok yiyor
+    p = predict_from_forms(home, away, 6, 6)
+    assert p["match_result"]["home"] > 0.6
+    assert p["expected_goals"]["home"] > p["expected_goals"]["away"]
+
+
+def test_predict_from_forms_h2h_shifts_result():
+    home = _mlog([(1, 1, "home")] * 6)
+    away = _mlog([(1, 1, "away")] * 6)
+    base = predict_from_forms(home, away, 6, 6)
+    # Güçlü H2H ev golü lehine sonucu kaydırmalı.
+    with_h2h = predict_from_forms(home, away, 6, 6,
+                                  h2h={"home_scored_avg": 3.0, "away_scored_avg": 0.0,
+                                       "meetings": 4})
+    assert with_h2h["expected_goals"]["home"] > base["expected_goals"]["home"]
+
+
 def test_shrink_pulls_small_samples_toward_league_avg():
     # 1 maçlık uçuk ortalama (5.0) lig ortalamasına ciddi yaklaşmalı.
     shrunk = shrink_to_league_avg(5.0, matches=1)

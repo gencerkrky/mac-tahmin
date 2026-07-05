@@ -40,6 +40,10 @@ H2H_FULL_MEETINGS = 4
 # one after it, so recent form dominates without ignoring older matches.
 RECENCY_DECAY = 0.12
 
+# Minimum venue-specific matches before we trust a home/away split; below this
+# we blend toward the team's overall form so a 1-game sample can't dominate.
+MIN_VENUE_MATCHES = 4
+
 # How strongly to correct a goal tally for the opponent's defensive quality.
 # 1.0 = full correction, 0 = ignore opponent. Kept moderate to avoid overfitting.
 OPPONENT_ADJ_STRENGTH = 0.5
@@ -91,6 +95,75 @@ def adjust_for_opponent(goals: float, opponent_conceded_avg: float,
     ratio = league_avg / opponent_conceded_avg
     adjusted = goals * (1 + OPPONENT_ADJ_STRENGTH * (ratio - 1))
     return round(max(adjusted, 0.0), 3)
+
+
+def venue_weighted(log: list, venue: str, key: str) -> float:
+    """Recency-weighted average of `key` (scored/conceded) for one venue.
+
+    Falls back to the full log when the team has too few matches at that venue,
+    so a side with only away games still gets a usable home estimate. The log
+    is most-recent-first; weighting expects oldest-first, so it's reversed.
+    """
+    if not log:
+        return 0.0
+    venue_vals = [m[key] for m in log if m["venue"] == venue]
+    all_vals = [m[key] for m in log]
+    if len(venue_vals) >= MIN_VENUE_MATCHES:
+        return weighted_average(list(reversed(venue_vals)))
+    if not venue_vals:
+        return weighted_average(list(reversed(all_vals)))
+    venue_w = weighted_average(list(reversed(venue_vals)))
+    all_w = weighted_average(list(reversed(all_vals)))
+    frac = len(venue_vals) / MIN_VENUE_MATCHES
+    return round(frac * venue_w + (1 - frac) * all_w, 3)
+
+
+def _opponent_adjusted_attack(log, venue, league_avg, conceded_of):
+    """Venue-weighted goals scored, each corrected for the opponent's defence."""
+    if not log:
+        return 0.0
+    venue_matches = [m for m in log if m["venue"] == venue]
+    matches = venue_matches if len(venue_matches) >= MIN_VENUE_MATCHES else log
+    adjusted = [adjust_for_opponent(m["scored"], conceded_of(m["opponent_id"]),
+                                    league_avg)
+                for m in matches]
+    return weighted_average(list(reversed(adjusted)))
+
+
+def predict_from_forms(home_log, away_log, home_matches, away_matches,
+                       h2h=None, league_avg=LEAGUE_AVG_GOALS, conceded_of=None):
+    """The full model on pre-fetched match logs — shared by live and backtest.
+
+    home_log/away_log: most-recent-first match records with keys
+    scored/conceded/venue/opponent_id. conceded_of(team_id)->float supplies
+    opponent defensive strength (defaults to league_avg, i.e. no correction).
+    h2h: optional {home_scored_avg, away_scored_avg, meetings} dict.
+    Returns a predict() dict, or None if either side has no matches.
+    """
+    if not home_log or not away_log:
+        return None
+    if conceded_of is None:
+        conceded_of = lambda _tid: league_avg
+
+    home_attack = _opponent_adjusted_attack(home_log, "home", league_avg, conceded_of)
+    away_attack = _opponent_adjusted_attack(away_log, "away", league_avg, conceded_of)
+    home_def = venue_weighted(home_log, "home", "conceded")
+    away_def = venue_weighted(away_log, "away", "conceded")
+
+    hs = shrink_to_league_avg(home_attack, home_matches)
+    hc = shrink_to_league_avg(home_def, home_matches)
+    as_ = shrink_to_league_avg(away_attack, away_matches)
+    ac = shrink_to_league_avg(away_def, away_matches)
+
+    m = h2h["meetings"] if h2h else 0
+    h2h_home = h2h["home_scored_avg"] if h2h else 0.0
+    h2h_away = h2h["away_scored_avg"] if h2h else 0.0
+    return predict(
+        blend_with_h2h(hs, h2h_home, m),
+        blend_with_h2h(hc, h2h_away, m),
+        blend_with_h2h(as_, h2h_away, m),
+        blend_with_h2h(ac, h2h_home, m),
+    )
 
 
 def _poisson_pmf(lam: float, k: int) -> float:

@@ -158,12 +158,23 @@ def get_fixtures(date_str: str) -> list:
     return fixtures
 
 
-def _score_value(competitor: dict) -> float:
-    """ESPN scores appear as {'value': 2.0} in schedules, '2' in scoreboards."""
-    score = competitor.get("score") or {}
-    if isinstance(score, dict):
-        return float(score.get("value", 0))
-    return float(score)
+def _score_value(competitor: dict):
+    """Numeric score for a competitor, or None when it's missing/malformed.
+
+    ESPN scores appear as {'value': 2.0} in schedules and '2' in scoreboards.
+    Returning None (rather than 0) lets callers skip corrupt records instead of
+    treating a scoreless completed match as 0-0.
+    """
+    score = competitor.get("score")
+    if score is None:
+        return None
+    raw = score.get("value") if isinstance(score, dict) else score
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def get_basketball_fixtures(date_str: str) -> list:
@@ -230,12 +241,15 @@ def get_basketball_form(team_id: str, league_slug: str) -> dict:
     games = 0
     for _, competition in finished:
         home, away = _sides(competition)
+        home_pts, away_pts = _score_value(home), _score_value(away)
+        if home_pts is None or away_pts is None:
+            continue  # corrupt record — don't count it as 0-0
         if str(home["team"]["id"]) == str(team_id):
-            scored += _score_value(home)
-            conceded += _score_value(away)
+            scored += home_pts
+            conceded += away_pts
         else:
-            scored += _score_value(away)
-            conceded += _score_value(home)
+            scored += away_pts
+            conceded += home_pts
         games += 1
 
     if games == 0:
@@ -333,16 +347,24 @@ def get_team_form(team_id: str, league_slug: str) -> dict:
     finished = finished[:FORM_MATCH_COUNT]
 
     matches = []  # most-recent first
-    for _, competition in finished:
+    for match_date, competition in finished:
         home, away = _sides(competition)
+        # A completed match with a missing score is corrupt data — skip it
+        # rather than silently record it as 0-0 and poison the averages.
+        home_score = _score_value(home)
+        away_score = _score_value(away)
+        if home_score is None or away_score is None:
+            continue
         if str(home["team"]["id"]) == str(team_id):
             matches.append({
-                "scored": _score_value(home), "conceded": _score_value(away),
+                "date": match_date,
+                "scored": home_score, "conceded": away_score,
                 "venue": "home", "opponent_id": str(away["team"]["id"]),
             })
         else:
             matches.append({
-                "scored": _score_value(away), "conceded": _score_value(home),
+                "date": match_date,
+                "scored": away_score, "conceded": home_score,
                 "venue": "away", "opponent_id": str(home["team"]["id"]),
             })
 
