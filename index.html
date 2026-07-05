@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Günün Kuponu — Maç Tahmin Paneli</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0;
+          --muted:#94a3b8; --accent:#fbbf24; --good:#34d399; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:var(--bg);
+         color:var(--text); padding:1rem; max-width:960px; margin:0 auto; }
+  h1 { font-size:1.3rem; margin-bottom:.25rem; }
+  h2 { font-size:1.05rem; color:var(--accent); margin:1.2rem 0 .5rem; }
+  .note { color:var(--muted); font-size:.8rem; margin:.4rem 0 1rem; }
+  .tabs { display:flex; gap:.5rem; margin:.8rem 0; flex-wrap:wrap; }
+  .tabs button { background:var(--card); color:var(--text); border:1px solid var(--line);
+                 border-radius:8px; padding:.45rem .8rem; cursor:pointer; font-size:.9rem; }
+  .tabs button.active { background:var(--accent); color:#111; font-weight:600; }
+  .match, .coupon { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:.7rem .9rem; margin-bottom:.5rem; }
+  .coupon { border-color:var(--accent); }
+  .meta { color:var(--muted); font-size:.78rem; }
+  .teams { font-weight:600; margin-top:.15rem; }
+  .pred { margin-top:.5rem; border-top:1px dashed var(--line); padding-top:.5rem;
+          display:grid; gap:.22rem; font-size:.88rem; }
+  .row { display:flex; justify-content:space-between; gap:.6rem; }
+  .star { color:var(--accent); font-weight:700; }
+  .odds { color:var(--good); }
+  .odds.hot { color:#fb7185; font-weight:700; }
+  .totals { margin-top:.5rem; font-weight:600; }
+  .err { color:#f87171; }
+  .spin { color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>⚽ Günün Kuponu</h1>
+<p class="note" id="genInfo">Yükleniyor…</p>
+<div id="content"><span class="spin">Veriler yükleniyor…</span></div>
+
+<script>
+const pct = p => (p * 100).toFixed(0) + "%";
+const MODE_LABELS = { safe:"🛡 Garanti", balanced:"⚖️ Dengeli (1.50+)", value:"🔥 Cesur (2.00+)" };
+const localTime = iso => new Date(iso).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"});
+
+function couponHTML(c) {
+  if (!c.picks.length) return "";
+  const rows = c.picks.map(p => {
+    const b = p.best_pick, f = p.fixture;
+    const icon = p.hit === true ? "✅ " : p.hit === false ? "❌ " : "";
+    const score = p.final_score ? ` <span class="odds">(${p.final_score})</span>` : "";
+    return `<div class="row"><span>${icon}${f.home.name} — ${f.away.name}${score}</span>
+      <span class="star">${b.label} ${pct(b.probability)} <span class="odds">@${b.fair_odds}</span></span></div>`;
+  }).join("");
+  const status = c.settled ? ` · <b>${c.hit_count}/${c.picks.length} tuttu</b>` : "";
+  return `<div class="coupon"><div class="meta">${c.date} · ${MODE_LABELS[c.mode]||c.mode}${status}</div>
+    <div class="pred">${rows}</div>
+    <div class="totals">Toplam adil oran: <span class="odds">${c.total_odds}</span> ·
+    Birleşik isabet: ${pct(c.combined_probability)}</div></div>`;
+}
+
+function predHTML(p, best) {
+  const rows = [
+    ["match_result","home","Ev sahibi kazanır",p.match_result.home],
+    ["match_result","draw","Beraberlik",p.match_result.draw],
+    ["match_result","away","Deplasman kazanır",p.match_result.away],
+    ["over_under_25","over","2.5 Üst",p.over_under_25.over],
+    ["over_under_25","under","2.5 Alt",p.over_under_25.under],
+    ["btts","yes","KG Var",p.btts.yes],
+    ["btts","no","KG Yok",p.btts.no],
+  ].map(([m,s,label,prob]) => {
+    const isBest = best && best.market===m && best.selection===s;
+    const odds = 1/prob;
+    return `<div class="row ${isBest?"star":""}"><span>${isBest?"⭐ ":""}${label}</span>
+      <span>${pct(prob)} <span class="odds ${odds>=2?"hot":""}">@${odds.toFixed(2)}</span></span></div>`;
+  }).join("");
+  const sc = p.most_likely_score;
+  return rows + `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>`;
+}
+
+function dayHTML(day) {
+  if (!day.matches.length) return '<p class="note">Bu tarihte seçili liglerde maç yok.</p>';
+  return day.matches.map(m => {
+    const f = m.fixture;
+    const pred = m.prediction ? `<div class="pred">${predHTML(m.prediction, m.best_pick)}</div>` : "";
+    const score = (f.goals && f.goals.home != null && f.status !== "NS")
+      ? ` <span class="odds">${f.goals.home}-${f.goals.away}</span>` : "";
+    return `<div class="match"><div class="meta">${f.league} · ${localTime(f.kickoff)} (${f.status})</div>
+      <div class="teams">${f.home.name} — ${f.away.name}${score}</div>${pred}</div>`;
+  }).join("");
+}
+
+async function main() {
+  let d;
+  try {
+    d = await (await fetch("data.json?t=" + Date.now())).json();
+  } catch (e) {
+    document.getElementById("content").innerHTML = '<p class="err">Veri yüklenemedi.</p>';
+    return;
+  }
+  const gen = new Date(d.generated_at).toLocaleString("tr-TR");
+  const s = d.stats;
+  const acc = s.total_picks
+    ? ` · Genel isabet: ${s.total_hits}/${s.total_picks} (${(s.hit_rate*100).toFixed(0)}%)`
+    : "";
+  document.getElementById("genInfo").textContent =
+    `Son güncelleme: ${gen} · Her sabah otomatik yenilenir${acc} · İstatistiksel tahmindir, kesinlik garanti etmez.`;
+
+  const coupons = d.coupons.map(couponHTML).join("") || '<p class="note">Bugün kupon oluşturulamadı.</p>';
+  const historyItems = d.history.map(couponHTML).join("") || '<p class="note">Henüz geçmiş yok.</p>';
+
+  const tabs = d.days.map((day,i) =>
+    `<button data-i="${i}" class="${i===0?"active":""}">${i===0?"Bugün":"Yarın"} (${day.date})</button>`).join("");
+
+  document.getElementById("content").innerHTML =
+    `<h2>🎫 Günün Kuponları</h2>${coupons}
+     <h2>📅 Bülten</h2><div class="tabs">${tabs}</div><div id="day"></div>
+     <h2>📜 Geçmiş & İsabet</h2>${historyItems}`;
+
+  const dayBox = document.getElementById("day");
+  const render = i => { dayBox.innerHTML = dayHTML(d.days[i]); };
+  document.querySelectorAll(".tabs button").forEach(btn =>
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      render(+btn.dataset.i);
+    }));
+  render(0);
+}
+main();
+</script>
+</body>
+</html>
