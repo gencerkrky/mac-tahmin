@@ -11,8 +11,19 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-API_BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer"
+ESPN_ROOT = "https://site.api.espn.com/apis/site/v2/sports"
+API_BASE_URL = f"{ESPN_ROOT}/soccer"
 REQUEST_TIMEOUT_SECONDS = 15
+
+# Basketball leagues (ESPN sport=basketball). Same scoreboard/schedule shape
+# as soccer, but scores are points and the model is basketball.py.
+BASKETBALL_LEAGUES = {
+    "nba": "NBA (ABD)",
+    "wnba": "WNBA (ABD Kadınlar)",
+    "nba-development": "G League (ABD)",
+    "mens-college-basketball": "NCAA Erkek (ABD)",
+}
+BASKETBALL_FORM_GAMES = 10
 
 # How many most-recent finished matches feed the form averages.
 FORM_MATCH_COUNT = 10
@@ -49,10 +60,17 @@ LEAGUES = {
     "jpn.1": "J1 League (Japonya)",
     "kor.1": "K League 1 (G. Kore)",
     "arg.1": "Liga Profesional (Arjantin)",
+    "arg.2": "Primera Nacional (Arjantin)",
     "mex.1": "Liga MX (Meksika)",
     "bra.1": "Serie A (Brezilya)",
     "bra.2": "Serie B (Brezilya)",
+    "ecu.1": "Liga Pro (Ekvador)",
+    "col.1": "Primera A (Kolombiya)",
+    "chi.1": "Primera División (Şili)",
     "usa.1": "MLS (ABD)",
+    "usa.usl.1": "USL Championship (ABD)",
+    "chn.1": "Süper Lig (Çin)",
+    "aus.1": "A-League (Avustralya)",
 }
 
 # Scoreboard calls are independent; fetch them concurrently so a ~28-league
@@ -145,6 +163,90 @@ def _score_value(competitor: dict) -> float:
     if isinstance(score, dict):
         return float(score.get("value", 0))
     return float(score)
+
+
+def get_basketball_fixtures(date_str: str) -> list:
+    """Basketball games on a date across BASKETBALL_LEAGUES (points, not goals)."""
+    cache_key = ("bball_fixtures", date_str)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    espn_date = date_str.replace("-", "")
+
+    def _fetch(slug):
+        try:
+            return slug, _get(f"{ESPN_ROOT}/basketball/{slug}/scoreboard",
+                              {"dates": espn_date})
+        except ApiError:
+            return slug, None
+
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        results = list(pool.map(_fetch, BASKETBALL_LEAGUES))
+
+    fixtures = []
+    for slug, payload in results:
+        if payload is None:
+            continue
+        for event in payload.get("events", []):
+            competition = event["competitions"][0]
+            home, away = _sides(competition)
+            state = competition["status"]["type"]["state"]
+            fixtures.append({
+                "fixture_id": str(event["id"]),
+                "kickoff": event["date"],
+                "status": _STATE_TO_STATUS.get(state, state.upper()),
+                "league_slug": slug,
+                "league": BASKETBALL_LEAGUES[slug],
+                "sport": "basketball",
+                "home": {"id": str(home["team"]["id"]), "name": home["team"]["displayName"]},
+                "away": {"id": str(away["team"]["id"]), "name": away["team"]["displayName"]},
+                "goals": {"home": home.get("score"), "away": away.get("score")},
+            })
+
+    fixtures.sort(key=lambda f: f["kickoff"])
+    _cache[cache_key] = fixtures
+    return fixtures
+
+
+def get_basketball_form(team_id: str, league_slug: str) -> dict:
+    """Points scored/allowed averages over a basketball team's recent games."""
+    cache_key = ("bball_form", league_slug, team_id)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    payload = _get(f"{ESPN_ROOT}/basketball/{league_slug}/teams/{team_id}/schedule", {})
+
+    finished = []
+    for event in payload.get("events", []):
+        competition = event["competitions"][0]
+        if not competition["status"]["type"]["completed"]:
+            continue
+        finished.append((event["date"], competition))
+    finished.sort(key=lambda pair: pair[0], reverse=True)
+    finished = finished[:BASKETBALL_FORM_GAMES]
+
+    scored = conceded = 0.0
+    games = 0
+    for _, competition in finished:
+        home, away = _sides(competition)
+        if str(home["team"]["id"]) == str(team_id):
+            scored += _score_value(home)
+            conceded += _score_value(away)
+        else:
+            scored += _score_value(away)
+            conceded += _score_value(home)
+        games += 1
+
+    if games == 0:
+        from basketball import LEAGUE_AVG_POINTS
+        form = {"scored_avg": LEAGUE_AVG_POINTS, "conceded_avg": LEAGUE_AVG_POINTS,
+                "games": 0}
+    else:
+        form = {"scored_avg": round(scored / games, 1),
+                "conceded_avg": round(conceded / games, 1), "games": games}
+
+    _cache[cache_key] = form
+    return form
 
 
 def get_h2h(league_slug: str, event_id: str, home_team_id: str) -> dict:

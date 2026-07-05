@@ -125,3 +125,50 @@ def test_blend_with_h2h_moves_toward_h2h():
 
 def test_blend_with_h2h_no_meetings_returns_form():
     assert blend_with_h2h(form_avg=1.4, h2h_avg=0.0, meetings=0) == 1.4
+
+
+# --- Genişletilmiş tahminler ---
+
+def test_scoreline_list_sorted_and_complete():
+    p = predict(1.6, 1.1, 1.3, 1.2)
+    scores = p["scorelines"]
+    # En olası skorla başlamalı, azalan olasılıkla sıralı.
+    assert scores[0]["home"] == p["most_likely_score"]["home"]
+    assert scores[0]["away"] == p["most_likely_score"]["away"]
+    probs = [s["probability"] for s in scores]
+    assert probs == sorted(probs, reverse=True)
+    # Olasılıklar makul bir orana kadar toplamalı (ilk ~15 skor > %80).
+    assert sum(probs[:15]) > 0.8
+
+
+def test_extra_over_under_lines():
+    p = predict(2.0, 1.5, 1.8, 1.4)
+    ou = p["over_under"]
+    # Daha düşük çizgi daha yüksek üst olasılığı vermeli.
+    assert ou["1.5"]["over"] > ou["2.5"]["over"] > ou["3.5"]["over"]
+    for line in ("1.5", "2.5", "3.5"):
+        assert ou[line]["over"] + ou[line]["under"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_odd_even_sums_to_one():
+    p = predict(1.4, 1.2, 1.5, 1.3)
+    oe = p["odd_even"]
+    assert oe["odd"] + oe["even"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_double_chance_from_match_result():
+    p = predict(2.2, 0.7, 0.8, 2.0)
+    dc = p["double_chance"]
+    mr = p["match_result"]
+    assert dc["1X"] == pytest.approx(mr["home"] + mr["draw"], abs=0.001)
+    assert dc["12"] == pytest.approx(mr["home"] + mr["away"], abs=0.001)
+    assert dc["X2"] == pytest.approx(mr["draw"] + mr["away"], abs=0.001)
+
+
+def test_htft_probabilities_sum_to_one():
+    p = predict(1.8, 1.0, 1.2, 1.3)
+    htft = p["htft"]
+    assert sum(htft.values()) == pytest.approx(1.0, abs=0.02)
+    # Güçlü ev sahibinde 1/1 en olası İY/MS kombinasyonu olmalı.
+    strong = predict(2.6, 0.5, 0.6, 2.3)["htft"]
+    assert strong["1/1"] == max(strong.values())

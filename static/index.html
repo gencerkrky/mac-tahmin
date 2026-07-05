@@ -38,12 +38,21 @@
   .aiBtn:disabled { opacity:.5; cursor:default; }
   .ai { background:rgba(251,191,36,.08); border-left:3px solid var(--accent);
         padding:.5rem .7rem; border-radius:6px; font-size:.88rem; line-height:1.45; }
+  .scoreList { margin-top:.4rem; font-size:.85rem; }
+  .scoreList summary { cursor:pointer; color:var(--accent); }
+  .scoreGrid { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem; }
+  .scoreChip { background:#0f172a; border:1px solid var(--line); border-radius:6px;
+               padding:.2rem .45rem; font-size:.82rem; }
 </style>
 </head>
 <body>
 <h1>⚽ Maç Tahmin Paneli</h1>
 
 <div class="bar">
+  <label>Spor: <select id="sportSel">
+    <option value="football" selected>⚽ Futbol</option>
+    <option value="basketball">🏀 Basketbol</option>
+  </select></label>
   <label>Tarih: <select id="dateSel"></select></label>
   <label>Kupon: <select id="sizeSel">
     <option>3</option><option selected>5</option><option>7</option>
@@ -69,6 +78,11 @@ const list = document.getElementById("list");
 const msg = document.getElementById("msg");
 const couponBox = document.getElementById("coupon");
 const dateSel = document.getElementById("dateSel");
+const sportSel = document.getElementById("sportSel");
+const isBasketball = () => sportSel.value === "basketball";
+const fixturesUrl = () => isBasketball()
+  ? `/api/basketball/fixtures?date=${dateSel.value}`
+  : `/api/fixtures?date=${dateSel.value}`;
 
 // Next 4 days as selectable dates (today first).
 for (let i = 0; i < 4; i++) {
@@ -85,6 +99,21 @@ async function getJSON(url) {
   const data = await r.json();
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
+}
+
+function basketballRows(p) {
+  const mr = p.match_result, tl = p.total_line;
+  const rows = [
+    ["Ev sahibi kazanır", mr.home], ["Deplasman kazanır", mr.away],
+    [`${p.line} Üst`, tl.over], [`${p.line} Alt`, tl.under],
+  ].map(([label, prob]) => {
+    const isBest = p.best_pick.label === label;
+    return `<div class="row ${isBest?"star":""}"><span>${isBest?"⭐ ":""}${label}</span>
+      <span>${pct(prob)} <span class="odds">@${(1/prob).toFixed(2)}</span></span></div>`;
+  }).join("");
+  return rows +
+    `<div class="row"><span>Beklenen skor</span><span>${p.expected_points.home} - ${p.expected_points.away}</span></div>
+     <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? "Ev " : "Dep "}${Math.abs(p.spread)}</span></div>`;
 }
 
 function predRows(p, best) {
@@ -106,9 +135,27 @@ function predRows(p, best) {
     return `<div class="row ${cls}"><span>${star}${label}</span>
             <span>${pct(prob)} <span class="${oddsCls}">@${odds.toFixed(2)}</span></span></div>`;
   }).join("");
+  // Ek marketler: 1.5/3.5 üst, çifte şans, tek/çift
+  const extra = `
+    <div class="row"><span>1.5 Üst / Alt</span><span>${pct(p.over_under["1.5"].over)} / ${pct(p.over_under["1.5"].under)}</span></div>
+    <div class="row"><span>3.5 Üst / Alt</span><span>${pct(p.over_under["3.5"].over)} / ${pct(p.over_under["3.5"].under)}</span></div>
+    <div class="row"><span>Çifte Şans (1X/12/X2)</span><span>${pct(p.double_chance["1X"])} / ${pct(p.double_chance["12"])} / ${pct(p.double_chance["X2"])}</span></div>
+    <div class="row"><span>Toplam Gol Tek / Çift</span><span>${pct(p.odd_even.odd)} / ${pct(p.odd_even.even)}</span></div>`;
+
+  // İY/MS: en olası 3 kombinasyon
+  const htftTop = Object.entries(p.htft).sort((a,b)=>b[1]-a[1]).slice(0,3)
+    .map(([k,v]) => `${k} (${pct(v)})`).join(" · ");
+
+  // Tüm skorlar (ilk 12), İddaa'daki gibi oranlarıyla
+  const scores = p.scorelines.slice(0,12).map(s =>
+    `<span class="scoreChip">${s.home}-${s.away} <span class="odds">@${(1/s.probability).toFixed(1)}</span></span>`).join("");
+
   const s = p.most_likely_score;
-  return html + `<div class="row"><span>En olası skor</span>
-    <span>${s.home}-${s.away} (${pct(s.probability)})</span></div>
+  return html + extra +
+    `<div class="row"><span>En olası skor</span><span>${s.home}-${s.away} (${pct(s.probability)})</span></div>
+     <div class="row"><span>İY/MS (en olası 3)</span><span>${htftTop}</span></div>
+     <details class="scoreList"><summary>📋 Tüm skorlar (oranlarıyla)</summary>
+       <div class="scoreGrid">${scores}</div></details>
     <button class="aiBtn">🤖 AI Analiz</button><div class="aiBox"></div>`;
 }
 
@@ -128,7 +175,7 @@ async function loadAnalysis(box, f, btn) {
 async function loadFixtures() {
   list.innerHTML = ""; msg.innerHTML = '<p class="spin">Maçlar yükleniyor…</p>';
   try {
-    const data = await getJSON(`/api/fixtures?date=${dateSel.value}`);
+    const data = await getJSON(fixturesUrl());
     msg.innerHTML = "";
     if (!data.fixtures.length) {
       msg.innerHTML = '<p class="note">Bu tarihte seçili liglerde maç yok.</p>'; return;
@@ -153,11 +200,15 @@ async function showPrediction(el, f) {
   if (box.dataset.loaded) { box.hidden = false; return; }
   box.hidden = false; box.innerHTML = '<span class="spin">Analiz ediliyor…</span>';
   try {
-    const d = await getJSON(`/api/predict?fixture=${f.fixture_id}&date=${dateSel.value}`);
-    box.innerHTML = predRows(d.prediction, d.best_pick);
+    const url = isBasketball()
+      ? `/api/basketball/predict?fixture=${f.fixture_id}&date=${dateSel.value}`
+      : `/api/predict?fixture=${f.fixture_id}&date=${dateSel.value}`;
+    const d = await getJSON(url);
+    box.innerHTML = isBasketball() ? basketballRows(d.prediction)
+                                   : predRows(d.prediction, d.best_pick);
     box.dataset.loaded = "1";
     const aiBtn = box.querySelector(".aiBtn");
-    aiBtn.addEventListener("click", (ev) => {
+    if (aiBtn) aiBtn.addEventListener("click", (ev) => {
       ev.stopPropagation();  // don't toggle the card closed
       loadAnalysis(box, f, aiBtn);
     });
@@ -219,7 +270,18 @@ document.getElementById("historyBtn").addEventListener("click", async () => {
   } catch (e) { historyBox.innerHTML = `<p class="err">${e.message}</p>`; }
 });
 
+// Kupon ve AI sadece futbolda anlamlı (basketbol modeli farklı).
+function updateSportUI() {
+  const football = !isBasketball();
+  document.getElementById("couponBtn").style.display = football ? "" : "none";
+  document.getElementById("sizeSel").parentElement.style.display = football ? "" : "none";
+  document.getElementById("modeSel").parentElement.style.display = football ? "" : "none";
+  couponBox.style.display = "none";
+}
+sportSel.addEventListener("change", () => { updateSportUI(); loadFixtures(); });
+
 dateSel.addEventListener("change", loadFixtures);
+updateSportUI();
 loadFixtures();
 </script>
 </body>

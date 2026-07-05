@@ -19,6 +19,13 @@ AWAY_FACTOR = 0.95
 # Scoreline matrix upper bound. P(goals > 8) is negligible (<0.1%).
 MAX_GOALS = 8
 
+# Share of a match's expected goals that fall in the first half. Historically
+# ~45% of goals come before the break (teams open up more in the second half).
+FIRST_HALF_SHARE = 0.45
+
+# How many top scorelines to expose to the UI (like a bookmaker's score list).
+SCORELINE_LIST_SIZE = 20
+
 # Shrinkage prior weight: a form average based on n matches is blended with
 # the league average as n/(n+K). Small samples (cup qualifiers, season start)
 # no longer produce extreme, overconfident expected goals.
@@ -67,22 +74,66 @@ def _expected_goals(home_scored, home_conceded, away_scored, away_conceded):
     return max(lam_home, 0.01), max(lam_away, 0.01)
 
 
+def _score_matrix(lam_home: float, lam_away: float) -> list:
+    """Normalised P(home=h, away=a) for h,a in 0..MAX_GOALS."""
+    matrix = [[_poisson_pmf(lam_home, h) * _poisson_pmf(lam_away, a)
+               for a in range(MAX_GOALS + 1)]
+              for h in range(MAX_GOALS + 1)]
+    total = sum(p for row in matrix for p in row)
+    return [[p / total for p in row] for row in matrix]
+
+
+def _result(hg: int, ag: int) -> str:
+    """'1' home win, '0' draw, '2' away win (bookmaker notation)."""
+    return "1" if hg > ag else "0" if hg == ag else "2"
+
+
+def _htft(lam_home: float, lam_away: float) -> dict:
+    """Half-time/full-time probabilities via independent half matrices.
+
+    First and second halves are modelled as independent Poisson draws whose
+    rates sum to the full-match expectation; the 9 HT×FT outcomes are
+    accumulated over their joint distribution.
+    """
+    lh1, la1 = lam_home * FIRST_HALF_SHARE, lam_away * FIRST_HALF_SHARE
+    lh2, la2 = lam_home - lh1, lam_away - la1
+    h1 = _score_matrix(lh1, la1)
+    h2 = _score_matrix(lh2, la2)
+
+    out = {f"{ht}/{ft}": 0.0
+           for ht in ("1", "0", "2") for ft in ("1", "0", "2")}
+    for hh1 in range(MAX_GOALS + 1):
+        for ah1 in range(MAX_GOALS + 1):
+            p1 = h1[hh1][ah1]
+            if p1 == 0:
+                continue
+            ht = _result(hh1, ah1)
+            for hh2 in range(MAX_GOALS + 1):
+                for ah2 in range(MAX_GOALS + 1):
+                    p = p1 * h2[hh2][ah2]
+                    ft = _result(hh1 + hh2, ah1 + ah2)
+                    out[f"{ht}/{ft}"] += p
+    return {k: round(v, 4) for k, v in out.items()}
+
+
 def predict(home_scored_avg, home_conceded_avg, away_scored_avg, away_conceded_avg):
     """Full prediction set derived from one scoreline probability matrix."""
     lam_home, lam_away = _expected_goals(
         home_scored_avg, home_conceded_avg, away_scored_avg, away_conceded_avg
     )
+    matrix = _score_matrix(lam_home, lam_away)
 
     home_win = draw = away_win = 0.0
-    over_25 = 0.0
     btts_yes = 0.0
-    best_score = (0, 0)
-    best_prob = 0.0
+    odd = 0.0
+    # Over probabilities for total-goal lines 1.5 / 2.5 / 3.5.
+    over = {1: 0.0, 2: 0.0, 3: 0.0}  # keyed by integer floor of the line
+    scorelines = []
 
     for hg in range(MAX_GOALS + 1):
-        p_h = _poisson_pmf(lam_home, hg)
         for ag in range(MAX_GOALS + 1):
-            p = p_h * _poisson_pmf(lam_away, ag)
+            p = matrix[hg][ag]
+            total = hg + ag
 
             if hg > ag:
                 home_win += p
@@ -91,17 +142,18 @@ def predict(home_scored_avg, home_conceded_avg, away_scored_avg, away_conceded_a
             else:
                 away_win += p
 
-            if hg + ag >= 3:
-                over_25 += p
             if hg >= 1 and ag >= 1:
                 btts_yes += p
-            if p > best_prob:
-                best_prob = p
-                best_score = (hg, ag)
+            if total % 2 == 1:
+                odd += p
+            for line in over:
+                if total > line:      # >1 covers 1.5, >2 covers 2.5, >3 covers 3.5
+                    over[line] += p
 
-    # Normalise: the truncated matrix sums to slightly under 1.0.
-    total = home_win + draw + away_win
-    home_win, draw, away_win = home_win / total, draw / total, away_win / total
+            scorelines.append({"home": hg, "away": ag, "probability": round(p, 4)})
+
+    scorelines.sort(key=lambda s: s["probability"], reverse=True)
+    best = scorelines[0]
 
     return {
         "expected_goals": {"home": round(lam_home, 2), "away": round(lam_away, 2)},
@@ -110,13 +162,25 @@ def predict(home_scored_avg, home_conceded_avg, away_scored_avg, away_conceded_a
             "draw": round(draw, 4),
             "away": round(away_win, 4),
         },
-        "over_under_25": {"over": round(over_25, 4), "under": round(1 - over_25, 4)},
-        "btts": {"yes": round(btts_yes, 4), "no": round(1 - btts_yes, 4)},
-        "most_likely_score": {
-            "home": best_score[0],
-            "away": best_score[1],
-            "probability": round(best_prob, 4),
+        "double_chance": {
+            "1X": round(home_win + draw, 4),
+            "12": round(home_win + away_win, 4),
+            "X2": round(draw + away_win, 4),
         },
+        "over_under_25": {"over": round(over[2], 4), "under": round(1 - over[2], 4)},
+        "over_under": {
+            "1.5": {"over": round(over[1], 4), "under": round(1 - over[1], 4)},
+            "2.5": {"over": round(over[2], 4), "under": round(1 - over[2], 4)},
+            "3.5": {"over": round(over[3], 4), "under": round(1 - over[3], 4)},
+        },
+        "btts": {"yes": round(btts_yes, 4), "no": round(1 - btts_yes, 4)},
+        "odd_even": {"odd": round(odd, 4), "even": round(1 - odd, 4)},
+        "htft": _htft(lam_home, lam_away),
+        "most_likely_score": {
+            "home": best["home"], "away": best["away"],
+            "probability": best["probability"],
+        },
+        "scorelines": scorelines[:SCORELINE_LIST_SIZE],
     }
 
 

@@ -13,7 +13,9 @@ from flask import Flask, jsonify, request
 
 import store
 from ai_analysis import AiError, analyze_prediction
-from api_client import ApiError, LEAGUES, get_fixtures, get_h2h, get_team_form
+from api_client import (ApiError, LEAGUES, get_basketball_fixtures,
+                        get_basketball_form, get_fixtures, get_h2h, get_team_form)
+from basketball import predict_basketball
 from poisson import best_pick, blend_with_h2h, predict, shrink_to_league_avg
 
 load_dotenv()
@@ -110,6 +112,40 @@ def fixtures():
         return jsonify({"error": "Geçersiz tarih. Beklenen format: YYYY-MM-DD"}), 400
     try:
         return jsonify({"date": date_str, "fixtures": get_fixtures(date_str)})
+    except ApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.get("/api/basketball/fixtures")
+def basketball_fixtures():
+    date_str = _parse_date(request.args.get("date", ""))
+    if not date_str:
+        return jsonify({"error": "Geçersiz tarih. Beklenen format: YYYY-MM-DD"}), 400
+    try:
+        return jsonify({"date": date_str, "fixtures": get_basketball_fixtures(date_str)})
+    except ApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.get("/api/basketball/predict")
+def basketball_predict_route():
+    fixture_id = request.args.get("fixture", "")
+    date_str = _parse_date(request.args.get("date", ""))
+    if not fixture_id.isdigit() or not date_str:
+        return jsonify({"error": "fixture ve date parametreleri zorunlu"}), 400
+    try:
+        fx = next((f for f in get_basketball_fixtures(date_str)
+                   if f["fixture_id"] == fixture_id), None)
+        if fx is None:
+            return jsonify({"error": "Maç bulunamadı"}), 404
+        home_form = get_basketball_form(fx["home"]["id"], fx["league_slug"])
+        away_form = get_basketball_form(fx["away"]["id"], fx["league_slug"])
+        prediction = predict_basketball(
+            home_form["scored_avg"], home_form["conceded_avg"],
+            away_form["scored_avg"], away_form["conceded_avg"],
+        )
+        return jsonify({"fixture": fx, "form": {"home": home_form, "away": away_form},
+                        "prediction": prediction, "best_pick": prediction["best_pick"]})
     except ApiError as exc:
         return jsonify({"error": str(exc)}), 502
 
