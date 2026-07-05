@@ -101,26 +101,44 @@ async function getJSON(url) {
   return data;
 }
 
-function basketballRows(p) {
+// "Ev sahibi kazanır" / "Deplasman kazanır" yerine takım adını kullan.
+function winLabel(selection, f, side) {
+  const name = side === "home" ? f.home.name : f.away.name;
+  return `${name} kazanır`;
+}
+
+// Kupon/geçmiş için: maç sonucu tahmini ise takım adını, değilse orijinali göster.
+function pickLabel(bp, f) {
+  if (bp.market === "match_result" && (bp.selection === "home" || bp.selection === "away")) {
+    return `${bp.selection === "home" ? f.home.name : f.away.name} kazanır`;
+  }
+  return bp.label;
+}
+
+function basketballRows(p, f) {
   const mr = p.match_result, tl = p.total_line;
   const rows = [
-    ["Ev sahibi kazanır", mr.home], ["Deplasman kazanır", mr.away],
+    [winLabel("home", f, "home"), mr.home, "home"],
+    [winLabel("away", f, "away"), mr.away, "away"],
     [`${p.line} Üst`, tl.over], [`${p.line} Alt`, tl.under],
-  ].map(([label, prob]) => {
-    const isBest = p.best_pick.label === label;
+  ].map(([label, prob, side]) => {
+    // best_pick etiketi orijinal ("Ev sahibi kazanır") olduğundan side ile eşle.
+    const bp = p.best_pick;
+    const isBest = (side && bp.selection === side) ||
+                   (!side && bp.label === label);
     return `<div class="row ${isBest?"star":""}"><span>${isBest?"⭐ ":""}${label}</span>
       <span>${pct(prob)} <span class="odds">@${(1/prob).toFixed(2)}</span></span></div>`;
   }).join("");
   return rows +
     `<div class="row"><span>Beklenen skor</span><span>${p.expected_points.home} - ${p.expected_points.away}</span></div>
-     <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? "Ev " : "Dep "}${Math.abs(p.spread)}</span></div>`;
+     <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? f.home.name : f.away.name} +${Math.abs(p.spread)}</span></div>`;
 }
 
-function predRows(p, best) {
+function predRows(p, best, f) {
   const rows = [
-    ["match_result", "home", "Ev sahibi kazanır", p.match_result.home],
+    ["match_result", "home", winLabel("home", f, "home"), p.match_result.home],
     ["match_result", "draw", "Beraberlik", p.match_result.draw],
-    ["match_result", "away", "Deplasman kazanır", p.match_result.away],
+    ["match_result", "away", winLabel("away", f, "away"), p.match_result.away],
     ["over_under_25", "over", "2.5 Üst", p.over_under_25.over],
     ["over_under_25", "under", "2.5 Alt", p.over_under_25.under],
     ["btts", "yes", "KG Var", p.btts.yes],
@@ -204,8 +222,8 @@ async function showPrediction(el, f) {
       ? `/api/basketball/predict?fixture=${f.fixture_id}&date=${dateSel.value}`
       : `/api/predict?fixture=${f.fixture_id}&date=${dateSel.value}`;
     const d = await getJSON(url);
-    box.innerHTML = isBasketball() ? basketballRows(d.prediction)
-                                   : predRows(d.prediction, d.best_pick);
+    box.innerHTML = isBasketball() ? basketballRows(d.prediction, f)
+                                   : predRows(d.prediction, d.best_pick, f);
     box.dataset.loaded = "1";
     const aiBtn = box.querySelector(".aiBtn");
     if (aiBtn) aiBtn.addEventListener("click", (ev) => {
@@ -228,7 +246,7 @@ document.getElementById("couponBtn").addEventListener("click", async () => {
     const rows = c.picks.map(p => {
       const f = p.fixture, b = p.best_pick;
       return `<div class="row"><span>${f.home.name} — ${f.away.name}</span>
-        <span class="star">${b.label} ${pct(b.probability)} <span class="odds">@${b.fair_odds}</span></span></div>`;
+        <span class="star">${pickLabel(b, f)} ${pct(b.probability)} <span class="odds">@${b.fair_odds}</span></span></div>`;
     }).join("");
     const skipped = c.skipped_count
       ? `<p class="note">Kota koruması: ${c.skipped_count} maç analiz dışı bırakıldı.</p>` : "";
@@ -260,7 +278,7 @@ document.getElementById("historyBtn").addEventListener("click", async () => {
         const icon = p.hit === true ? "✅" : p.hit === false ? "❌" : "⏳";
         const score = p.final_score ? ` <span class="odds">(${p.final_score})</span>` : "";
         return `<div class="row"><span>${icon} ${p.fixture.home.name} — ${p.fixture.away.name}${score}</span>
-          <span>${p.best_pick.label} @${p.best_pick.fair_odds}</span></div>`;
+          <span>${pickLabel(p.best_pick, p.fixture)} @${p.best_pick.fair_odds}</span></div>`;
       }).join("");
       const status = c.settled_at ? `${c.hit_count}/${c.picks.length} tuttu` : "beklemede";
       return `<div class="match"><div class="meta">${c.date} · ${MODE_LABELS[c.mode] || c.mode} ·

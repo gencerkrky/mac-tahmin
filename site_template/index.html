@@ -60,7 +60,7 @@ function couponHTML(c) {
     const icon = p.hit === true ? "✅ " : p.hit === false ? "❌ " : "";
     const score = p.final_score ? ` <span class="odds">(${p.final_score})</span>` : "";
     return `<div class="row"><span>${icon}${f.home.name} — ${f.away.name}${score}</span>
-      <span class="star">${b.label} ${pct(b.probability)} <span class="odds">@${b.fair_odds}</span></span></div>`;
+      <span class="star">${pickLabel(b, f)} ${pct(b.probability)} <span class="odds">@${b.fair_odds}</span></span></div>`;
   }).join("");
   const status = c.settled ? ` · <b>${c.hit_count}/${c.picks.length} tuttu</b>` : "";
   return `<div class="coupon"><div class="meta">${c.date} · ${MODE_LABELS[c.mode]||c.mode}${status}</div>
@@ -69,11 +69,19 @@ function couponHTML(c) {
     Birleşik isabet: ${pct(c.combined_probability)}</div></div>`;
 }
 
-function predHTML(p, best) {
+// "Ev sahibi/Deplasman kazanır" yerine takım adı.
+function pickLabel(bp, f) {
+  if (bp.market === "match_result" && (bp.selection === "home" || bp.selection === "away")) {
+    return `${bp.selection === "home" ? f.home.name : f.away.name} kazanır`;
+  }
+  return bp.label;
+}
+
+function predHTML(p, best, f) {
   const rows = [
-    ["match_result","home","Ev sahibi kazanır",p.match_result.home],
+    ["match_result","home",`${f.home.name} kazanır`,p.match_result.home],
     ["match_result","draw","Beraberlik",p.match_result.draw],
-    ["match_result","away","Deplasman kazanır",p.match_result.away],
+    ["match_result","away",`${f.away.name} kazanır`,p.match_result.away],
     ["over_under_25","over","2.5 Üst",p.over_under_25.over],
     ["over_under_25","under","2.5 Alt",p.over_under_25.under],
     ["btts","yes","KG Var",p.btts.yes],
@@ -106,26 +114,27 @@ function predHTML(p, best) {
   return rows + extra;
 }
 
-function basketballPredHTML(p) {
+function basketballPredHTML(p, f) {
   const mr = p.match_result, tl = p.total_line;
   const rows = [
-    ["Ev sahibi kazanır", mr.home], ["Deplasman kazanır", mr.away],
+    [`${f.home.name} kazanır`, mr.home, "home"],
+    [`${f.away.name} kazanır`, mr.away, "away"],
     [`${p.line} Üst`, tl.over], [`${p.line} Alt`, tl.under],
-  ].map(([label, prob]) => {
-    const isBest = p.best_pick.label === label;
+  ].map(([label, prob, side]) => {
+    const isBest = side ? p.best_pick.selection === side : p.best_pick.label === label;
     return `<div class="row ${isBest?"star":""}"><span>${isBest?"⭐ ":""}${label}</span>
       <span>${pct(prob)} <span class="odds">@${(1/prob).toFixed(2)}</span></span></div>`;
   }).join("");
   return rows +
     `<div class="row"><span>Beklenen skor</span><span>${p.expected_points.home} - ${p.expected_points.away}</span></div>
-     <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? "Ev " : "Dep "}${Math.abs(p.spread)}</span></div>`;
+     <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? f.home.name : f.away.name} +${Math.abs(p.spread)}</span></div>`;
 }
 
 function basketballDayHTML(day) {
   if (!day.matches.length) return '<p class="note">Bu tarihte basketbol maçı yok (sezon arası olabilir).</p>';
   return day.matches.map(m => {
     const f = m.fixture;
-    const pred = m.prediction ? `<div class="pred">${basketballPredHTML(m.prediction)}</div>` : "";
+    const pred = m.prediction ? `<div class="pred">${basketballPredHTML(m.prediction, f)}</div>` : "";
     return `<div class="match"><div class="meta">🏀 ${f.league} · ${localTime(f.kickoff)} (${f.status})</div>
       <div class="teams">${f.home.name} — ${f.away.name}</div>${pred}</div>`;
   }).join("");
@@ -135,7 +144,7 @@ function dayHTML(day) {
   if (!day.matches.length) return '<p class="note">Bu tarihte seçili liglerde maç yok.</p>';
   return day.matches.map(m => {
     const f = m.fixture;
-    const pred = m.prediction ? `<div class="pred">${predHTML(m.prediction, m.best_pick)}</div>` : "";
+    const pred = m.prediction ? `<div class="pred">${predHTML(m.prediction, m.best_pick, f)}</div>` : "";
     const score = (f.goals && f.goals.home != null && f.status !== "NS")
       ? ` <span class="odds">${f.goals.home}-${f.goals.away}</span>` : "";
     return `<div class="match"><div class="meta">${f.league} · ${localTime(f.kickoff)} (${f.status})</div>
