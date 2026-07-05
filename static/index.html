@@ -33,6 +33,10 @@
   #coupon .totals { margin-top:.6rem; font-weight:600; }
   .err { color:#f87171; margin:.5rem 0; }
   .spin { color:var(--muted); }
+  .aiBtn { margin-top:.5rem; cursor:pointer; align-self:start; }
+  .aiBtn:disabled { opacity:.5; cursor:default; }
+  .ai { background:rgba(251,191,36,.08); border-left:3px solid var(--accent);
+        padding:.5rem .7rem; border-radius:6px; font-size:.88rem; line-height:1.45; }
 </style>
 </head>
 <body>
@@ -96,7 +100,21 @@ function predRows(p, best) {
   }).join("");
   const s = p.most_likely_score;
   return html + `<div class="row"><span>En olası skor</span>
-    <span>${s.home}-${s.away} (${pct(s.probability)})</span></div>`;
+    <span>${s.home}-${s.away} (${pct(s.probability)})</span></div>
+    <button class="aiBtn">🤖 AI Analiz</button><div class="aiBox"></div>`;
+}
+
+async function loadAnalysis(box, f, btn) {
+  btn.disabled = true;
+  const target = box.querySelector(".aiBox");
+  target.innerHTML = '<span class="spin">AI analiz ediyor…</span>';
+  try {
+    const d = await getJSON(`/api/analyze?fixture=${f.fixture_id}&date=${dateSel.value}`);
+    target.innerHTML = `<p class="ai">${d.analysis}</p>`;
+  } catch (e) {
+    target.innerHTML = `<span class="err">${e.message}</span>`;
+    btn.disabled = false;
+  }
 }
 
 async function loadFixtures() {
@@ -128,6 +146,11 @@ async function showPrediction(el, f) {
     const d = await getJSON(`/api/predict?fixture=${f.fixture_id}&date=${dateSel.value}`);
     box.innerHTML = predRows(d.prediction, d.best_pick);
     box.dataset.loaded = "1";
+    const aiBtn = box.querySelector(".aiBtn");
+    aiBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();  // don't toggle the card closed
+      loadAnalysis(box, f, aiBtn);
+    });
   } catch (e) { box.innerHTML = `<span class="err">${e.message}</span>`; }
 }
 

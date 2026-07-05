@@ -11,6 +11,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
+from ai_analysis import AiError, analyze_prediction
 from api_client import ApiError, LEAGUES, get_fixtures, get_team_form
 from poisson import best_pick, predict
 
@@ -25,6 +26,9 @@ DEFAULT_COUPON_SIZE = 5
 
 # Only not-yet-started fixtures make sense for predictions.
 UPCOMING_STATUSES = {"NS", "TBD"}
+
+# AI analyses are paid API calls; cache per fixture for the process lifetime.
+_ai_cache: dict = {}
 
 
 def predict_fixture(fx: dict) -> dict:
@@ -101,6 +105,30 @@ def predict_route():
         return jsonify(predict_fixture(fx))
     except ApiError as exc:
         return jsonify({"error": str(exc)}), 502
+
+
+@app.get("/api/analyze")
+def analyze():
+    fixture_id = request.args.get("fixture", "")
+    date_str = _parse_date(request.args.get("date", ""))
+    if not fixture_id.isdigit() or not date_str:
+        return jsonify({"error": "fixture ve date parametreleri zorunlu"}), 400
+
+    if fixture_id in _ai_cache:
+        return jsonify({"analysis": _ai_cache[fixture_id], "cached": True})
+
+    try:
+        fx = next((f for f in get_fixtures(date_str) if f["fixture_id"] == fixture_id), None)
+        if fx is None:
+            return jsonify({"error": "Maç bulunamadı"}), 404
+        analysis = analyze_prediction(predict_fixture(fx))
+    except ApiError as exc:
+        return jsonify({"error": str(exc)}), 502
+    except AiError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    _ai_cache[fixture_id] = analysis
+    return jsonify({"analysis": analysis, "cached": False})
 
 
 @app.get("/api/coupon")
