@@ -12,18 +12,25 @@ gösterilir ve en yüksek olasılıklı olan öne çıkarılır.
 ## Kapsam
 
 ### Dahil
-- Günün maçlarını API-Football'dan çekme
+- Seçilen tarihin (bugün veya ileri tarih) maçlarını API-Football'dan çekme
+- Seçili birkaç büyük ligle sınırlı analiz (ücretsiz kota koruması)
 - Bir maç için iki takımın son ~10 maçından gol istatistiği toplama
 - Poisson modeliyle olasılık hesaplama
 - Dört tahmin türü: Maç sonucu (1/X/2), 2.5 Üst/Alt, Karşılıklı Gol (Var/Yok),
   en olası kesin skor
 - En yüksek olasılıklı tahmini görsel olarak vurgulama
 - Adil oran (`1/olasılık`) hesaplama, 2.00+ olanları işaretleme
+- **Otomatik kupon:** seçili ligleri analiz edip en yüksek güvenli tahminleri
+  sıralama, en emin N maçı (varsayılan 5, ayarlanabilir) kupon olarak sunma;
+  toplam oran ve birleşik isabet olasılığı gösterme
 - Kota korumak için bellek içi önbellek
 
 ### Dışı (YAGNI)
 - Hava durumu, sakatlık, kadro verisi (ücretsiz planda güvenilmez, karmaşık)
 - AI/Fable yorum katmanı (kod içinde kanca bırakılır, sonradan eklenebilir)
+- **Nesine.com veya başka bahis sitesine bağlanma / oradan oran çekme / otomatik
+  bahis oynatma** — halka açık API yok, scraping kullanım şartlarını ihlal eder,
+  otomatik bahis güvenlik riski. Sistem yalnızca kendi tahminlerini üretir.
 - Kullanıcı hesabı, veritabanı, geçmiş tahmin kaydı
 - Canlı skor takibi
 
@@ -59,9 +66,13 @@ Tarayıcı (tek HTML sayfa)
    │  fetch() JSON
    ▼
 Flask backend            ← API anahtarı sunucuda, tarayıcıya asla gitmez
-   ├── GET /api/fixtures?date=YYYY-MM-DD  → o günün maç listesi
-   └── GET /api/predict?fixture=<id>      → o maç için 4 tahmin
+   ├── GET /api/fixtures?date=YYYY-MM-DD  → o tarihin (seçili ligler) maç listesi
+   ├── GET /api/predict?fixture=<id>      → o maç için 4 tahmin
+   └── GET /api/coupon?date=...&size=5    → en emin N maçtan otomatik kupon
 ```
+
+Seçili ligler `LEAGUES` sabitinde tutulur (lig id → ad). Ücretsiz kotayı
+korumak için kupon yalnızca bu ligleri analiz eder.
 
 ### Bileşenler ve sorumlulukları
 
@@ -69,7 +80,7 @@ Flask backend            ← API anahtarı sunucuda, tarayıcıya asla gitmez
 |-------|-----------|-----------|
 | `poisson.py` | Saf istatistik: gol ort. → olasılıklar. Ağ/IO yok, tam test edilebilir. | yok (stdlib `math`) |
 | `api_client.py` | API-Football çağrıları, hata yönetimi, önbellek. | requests |
-| `app.py` | Flask rotaları, api_client + poisson'u birleştirir, JSON döner. | flask |
+| `app.py` | Flask rotaları, api_client + poisson'u birleştirir, kupon üretir, JSON döner. | flask |
 | `static/index.html` | Tek sayfa arayüz: maç listesi + tahmin kartları. | yok (vanilla JS) |
 | `test_poisson.py` | poisson.py birim testleri. | pytest |
 
@@ -85,6 +96,21 @@ olasılık döner. Bu sayede bağımsız test edilir ve API değişse bile bozul
 3. Ortalamalar `poisson.predict(...)` fonksiyonuna verilir
 4. Dört tahmin + en olası skor + oranlar hesaplanır
 5. JSON olarak arayüze döner, en yüksek olasılıklı vurgulanır
+
+## Otomatik Kupon Mantığı
+
+1. Seçili tarih + `LEAGUES` listesindeki maçlar çekilir.
+2. Her maç için `poisson.predict(...)` çalıştırılır; dört tahminin en yüksek
+   olasılıklı olanı o maçın "en iyi bahsi" olur.
+3. Tüm maçlar bu en iyi bahsin olasılığına göre azalan sıralanır.
+4. En üstteki N maç (varsayılan 5) kupona alınır.
+5. Kupon metrikleri:
+   - **Toplam oran** = seçilen bahislerin adil oranlarının çarpımı
+   - **Birleşik isabet olasılığı** = seçilen olasılıkların çarpımı
+     (bağımsızlık varsayımı; not olarak "tahmini" ibaresiyle sunulur)
+
+> Uyarı metni: kupondaki oranlar modelin *adil oranlarıdır*, bir bahis
+> şirketinin oranları değildir. Karşılaştırma kullanıcıya bırakılır.
 
 ## Hata Yönetimi
 
