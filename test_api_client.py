@@ -6,38 +6,52 @@ from api_client import ApiError, get_fixtures, get_team_form, clear_cache
 
 
 @pytest.fixture(autouse=True)
-def fresh_cache(monkeypatch):
-    monkeypatch.setenv("API_FOOTBALL_KEY", "test-key")
+def fresh_cache():
     clear_cache()
 
 
-def _fixture_payload():
-    # Minimal but structurally faithful API-Football /fixtures response.
-    def item(fid, league_id, league, country, home_id, home, away_id, away):
+def _scoreboard_payload():
+    # Minimal but structurally faithful ESPN scoreboard response.
+    def event(eid, home_id, home, away_id, away, state):
         return {
-            "fixture": {"id": fid, "date": "2026-07-05T17:00:00+00:00",
-                        "status": {"short": "NS"}},
-            "league": {"id": league_id, "name": league, "country": country},
-            "teams": {"home": {"id": home_id, "name": home},
-                      "away": {"id": away_id, "name": away}},
-            "goals": {"home": None, "away": None},
+            "id": eid,
+            "date": "2026-07-05T15:00Z",
+            "competitions": [{
+                "competitors": [
+                    {"homeAway": "home", "team": {"id": home_id, "displayName": home},
+                     "score": "0"},
+                    {"homeAway": "away", "team": {"id": away_id, "displayName": away},
+                     "score": "0"},
+                ],
+                "status": {"type": {"state": state, "completed": False}},
+            }],
+            "status": {"type": {"state": state}},
         }
-    in_scope_league = next(iter(api_client.LEAGUES))
-    return {"errors": [], "response": [
-        item(1, in_scope_league, "Test Lig", "Turkey", 10, "Ev FC", 20, "Dep FC"),
-        item(2, 999999, "Kapsam Dışı Lig", "Nowhere", 30, "A", 40, "B"),
+    return {"events": [
+        event("100", "10", "Ev FC", "20", "Dep FC", "pre"),
+        event("101", "30", "Canli FC", "40", "Rakip FC", "in"),
     ]}
 
 
-def _form_payload():
-    # Two finished matches for team 10: scored 3+1=4, conceded 1+0=1.
-    return {"errors": [], "response": [
-        {"fixture": {"status": {"short": "FT"}},
-         "teams": {"home": {"id": 10}, "away": {"id": 99}},
-         "goals": {"home": 3, "away": 1}},
-        {"fixture": {"status": {"short": "FT"}},
-         "teams": {"home": {"id": 88}, "away": {"id": 10}},
-         "goals": {"home": 0, "away": 1}},
+def _schedule_payload():
+    # Two completed matches for team 10: scored 3+1=4, conceded 1+0=1.
+    def event(date, home_id, home_score, away_id, away_score, completed=True):
+        return {
+            "date": date,
+            "competitions": [{
+                "competitors": [
+                    {"homeAway": "home", "team": {"id": home_id},
+                     "score": {"value": home_score}},
+                    {"homeAway": "away", "team": {"id": away_id},
+                     "score": {"value": away_score}},
+                ],
+                "status": {"type": {"completed": completed}},
+            }],
+        }
+    return {"events": [
+        event("2026-06-20T15:00Z", "10", 3, "99", 1),
+        event("2026-06-27T15:00Z", "88", 0, "10", 1),
+        event("2026-07-10T15:00Z", "10", 0, "77", 0, completed=False),  # upcoming: ignored
     ]}
 
 
@@ -50,39 +64,47 @@ class FakeResponse:
         return self._payload
 
 
-def test_get_fixtures_filters_to_leagues(monkeypatch):
-    calls = []
+def test_get_fixtures_maps_events(monkeypatch):
     monkeypatch.setattr(api_client.requests, "get",
-                        lambda *a, **k: calls.append(1) or FakeResponse(_fixture_payload()))
+                        lambda *a, **k: FakeResponse(_scoreboard_payload()))
     result = get_fixtures("2026-07-05")
-    assert len(result) == 1                      # out-of-scope league filtered out
-    assert result[0]["fixture_id"] == 1
-    assert result[0]["home"]["name"] == "Ev FC"
+    # One scoreboard call per league; every league returns the same 2 events here.
+    per_league = 2
+    assert len(result) == per_league * len(api_client.LEAGUES)
+    first = result[0]
+    assert first["fixture_id"] == "100"
+    assert first["status"] == "NS"                    # 'pre' mapped to NS
+    assert first["home"]["name"] == "Ev FC"
+    assert first["league_slug"] in api_client.LEAGUES
+    live = result[1]
+    assert live["status"] == "LIVE"                   # 'in' mapped to LIVE
 
 
 def test_get_fixtures_cached_per_date(monkeypatch):
     calls = []
     monkeypatch.setattr(api_client.requests, "get",
-                        lambda *a, **k: calls.append(1) or FakeResponse(_fixture_payload()))
+                        lambda *a, **k: calls.append(1) or FakeResponse(_scoreboard_payload()))
     get_fixtures("2026-07-05")
+    n = len(calls)
     get_fixtures("2026-07-05")
-    assert len(calls) == 1                       # second hit served from cache
+    assert len(calls) == n                            # second hit fully cached
 
 
 def test_get_team_form_averages(monkeypatch):
     monkeypatch.setattr(api_client.requests, "get",
-                        lambda *a, **k: FakeResponse(_form_payload()))
-    form = get_team_form(10)
-    assert form["matches"] == 2
-    assert form["scored_avg"] == pytest.approx(2.0)    # (3 + 1) / 2
-    assert form["conceded_avg"] == pytest.approx(0.5)  # (1 + 0) / 2
+                        lambda *a, **k: FakeResponse(_schedule_payload()))
+    form = get_team_form("10", "swe.1")
+    assert form["matches"] == 2                       # upcoming match ignored
+    assert form["scored_avg"] == pytest.approx(2.0)   # (3 + 1) / 2
+    assert form["conceded_avg"] == pytest.approx(0.5) # (1 + 0) / 2
 
 
-def test_api_error_on_api_level_errors(monkeypatch):
+def test_get_team_form_no_data_falls_back(monkeypatch):
     monkeypatch.setattr(api_client.requests, "get",
-                        lambda *a, **k: FakeResponse({"errors": {"token": "invalid"}, "response": []}))
-    with pytest.raises(ApiError):
-        get_fixtures("2026-07-05")
+                        lambda *a, **k: FakeResponse({"events": []}))
+    form = get_team_form("10", "swe.1")
+    assert form["matches"] == 0
+    assert form["scored_avg"] == form["conceded_avg"] > 0  # league-average profile
 
 
 def test_api_error_on_network_failure(monkeypatch):
@@ -90,4 +112,17 @@ def test_api_error_on_network_failure(monkeypatch):
         raise api_client.requests.exceptions.ConnectionError("down")
     monkeypatch.setattr(api_client.requests, "get", boom)
     with pytest.raises(ApiError):
-        get_team_form(10)
+        get_team_form("10", "swe.1")
+
+
+def test_get_fixtures_tolerates_single_league_failure(monkeypatch):
+    # One league endpoint failing must not blank the whole bulletin.
+    calls = []
+    def flaky(url, *a, **k):
+        calls.append(url)
+        if len(calls) == 1:
+            raise api_client.requests.exceptions.ConnectionError("down")
+        return FakeResponse(_scoreboard_payload())
+    monkeypatch.setattr(api_client.requests, "get", flaky)
+    result = get_fixtures("2026-07-05")
+    assert len(result) == 2 * (len(api_client.LEAGUES) - 1)

@@ -29,8 +29,8 @@ UPCOMING_STATUSES = {"NS", "TBD"}
 
 def predict_fixture(fx: dict) -> dict:
     """Combine both teams' form into a full prediction for one fixture."""
-    home_form = get_team_form(fx["home"]["id"])
-    away_form = get_team_form(fx["away"]["id"])
+    home_form = get_team_form(fx["home"]["id"], fx["league_slug"])
+    away_form = get_team_form(fx["away"]["id"], fx["league_slug"])
     prediction = predict(
         home_form["scored_avg"], home_form["conceded_avg"],
         away_form["scored_avg"], away_form["conceded_avg"],
@@ -89,9 +89,10 @@ def fixtures():
 
 @app.get("/api/predict")
 def predict_route():
-    fixture_id = request.args.get("fixture", type=int)
+    # ESPN event ids are strings; validate as non-empty digits.
+    fixture_id = request.args.get("fixture", "")
     date_str = _parse_date(request.args.get("date", ""))
-    if fixture_id is None or not date_str:
+    if not fixture_id.isdigit() or not date_str:
         return jsonify({"error": "fixture ve date parametreleri zorunlu"}), 400
     try:
         fx = next((f for f in get_fixtures(date_str) if f["fixture_id"] == fixture_id), None)
