@@ -23,6 +23,7 @@ FALLBACK_GOAL_AVG = 1.35
 # Big European leagues pause in summer; the Nordic/American summer leagues
 # keep the system testable year-round.
 LEAGUES = {
+    "fifa.world": "Dünya Kupası 2026",
     "tur.1": "Süper Lig (Türkiye)",
     "eng.1": "Premier League (İngiltere)",
     "esp.1": "La Liga (İspanya)",

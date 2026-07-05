@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Maç Tahmin Paneli</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0;
           --muted:#94a3b8; --accent:#fbbf24; --good:#34d399; }
@@ -128,7 +129,9 @@ async function loadFixtures() {
     for (const f of data.fixtures) {
       const el = document.createElement("div");
       el.className = "match";
-      el.innerHTML = `<div class="meta">${f.country} · ${f.league} · ${f.kickoff.slice(11,16)} (${f.status})</div>
+      const kickoff = new Date(f.kickoff).toLocaleTimeString("tr-TR",
+        { hour: "2-digit", minute: "2-digit" });  // local time, not UTC
+      el.innerHTML = `<div class="meta">${f.league} · ${kickoff} (${f.status})</div>
         <div class="teams">${f.home.name} — ${f.away.name}</div>
         <div class="pred" hidden></div>`;
       el.addEventListener("click", () => showPrediction(el, f), { once: false });
