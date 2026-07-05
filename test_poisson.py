@@ -75,3 +75,24 @@ def test_best_pick_selects_highest_broad_market():
 def test_best_pick_never_returns_exact_score():
     p = predict(1.0, 1.0, 1.0, 1.0)
     assert best_pick(p)["market"] != "most_likely_score"
+
+
+def test_best_pick_min_odds_filters_low_odds():
+    # 'Cesur' kupon modu: yalnızca adil oranı eşiğin üstündeki seçimlerden,
+    # olasılığı en yüksek olan dönmeli.
+    p = predict(2.5, 0.5, 0.7, 2.2)          # ev kazanır ~%70+, oranı < 2.00
+    pick = best_pick(p, min_odds=2.0)
+    assert pick is not None
+    assert pick["fair_odds"] >= 2.0
+    # Eşiği geçenler arasında en olası seçim olmalı.
+    all_probs = [p[m][s] for (m, s) in [
+        ("match_result", "home"), ("match_result", "draw"), ("match_result", "away"),
+        ("over_under_25", "over"), ("over_under_25", "under"),
+        ("btts", "yes"), ("btts", "no"),
+    ] if 1 / p[m][s] >= 2.0]
+    assert pick["probability"] == pytest.approx(max(all_probs), abs=0.001)
+
+
+def test_best_pick_min_odds_none_when_impossible():
+    p = predict(1.0, 1.0, 1.0, 1.0)
+    assert best_pick(p, min_odds=100.0) is None

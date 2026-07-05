@@ -48,6 +48,11 @@
   <label>Kupon: <select id="sizeSel">
     <option>3</option><option selected>5</option><option>7</option>
   </select> maç</label>
+  <label>Mod: <select id="modeSel">
+    <option value="safe" selected>🛡 Garanti</option>
+    <option value="balanced">⚖️ Dengeli (1.50+)</option>
+    <option value="value">🔥 Cesur (2.00+)</option>
+  </select></label>
   <button class="primary" id="couponBtn">🎫 En Emin Kuponu Oluştur</button>
 </div>
 <p class="note">Olasılıklar Poisson modelinin tahminidir; kesinlik garanti etmez.
@@ -161,8 +166,9 @@ document.getElementById("couponBtn").addEventListener("click", async () => {
   couponBox.style.display = "block";
   couponBox.innerHTML = '<span class="spin">Maçlar analiz ediliyor (biraz sürebilir)…</span>';
   const size = document.getElementById("sizeSel").value;
+  const mode = document.getElementById("modeSel").value;
   try {
-    const c = await getJSON(`/api/coupon?date=${dateSel.value}&size=${size}`);
+    const c = await getJSON(`/api/coupon?date=${dateSel.value}&size=${size}&mode=${mode}`);
     if (!c.picks.length) {
       couponBox.innerHTML = '<p class="note">Bu tarihte analiz edilecek başlamamış maç yok.</p>'; return;
     }

@@ -42,6 +42,12 @@ def test_predict_route_requires_fixture_id():
     assert resp.status_code == 400
 
 
+def test_coupon_route_rejects_invalid_mode():
+    client = app.test_client()
+    resp = client.get("/api/coupon?date=2026-07-05&mode=yanlis")
+    assert resp.status_code == 400
+
+
 def test_fixtures_route_maps_api_error_to_502(monkeypatch):
     def boom(date_str):
         raise app_module.ApiError("kota doldu")

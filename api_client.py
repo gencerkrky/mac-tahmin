@@ -7,6 +7,8 @@ normalisation and caching. Callers receive plain dicts and a single
 exception type (ApiError) whose message is safe to show to end users.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import requests
 
 API_BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer"
@@ -24,18 +26,38 @@ FALLBACK_GOAL_AVG = 1.35
 # keep the system testable year-round.
 LEAGUES = {
     "fifa.world": "Dünya Kupası 2026",
+    "uefa.champions": "Şampiyonlar Ligi",
+    "uefa.champions_qual": "Şampiyonlar Ligi Eleme",
+    "uefa.europa": "Avrupa Ligi",
+    "uefa.europa_qual": "Avrupa Ligi Eleme",
+    "uefa.europa.conf": "Konferans Ligi",
+    "uefa.europa.conf_qual": "Konferans Ligi Eleme",
     "tur.1": "Süper Lig (Türkiye)",
     "eng.1": "Premier League (İngiltere)",
     "esp.1": "La Liga (İspanya)",
     "ita.1": "Serie A (İtalya)",
     "ger.1": "Bundesliga (Almanya)",
     "fra.1": "Ligue 1 (Fransa)",
+    "ned.1": "Eredivisie (Hollanda)",
+    "por.1": "Primeira Liga (Portekiz)",
+    "bel.1": "Pro League (Belçika)",
     "nor.1": "Eliteserien (Norveç)",
     "swe.1": "Allsvenskan (İsveç)",
     "fin.1": "Veikkausliiga (Finlandiya)",
+    "irl.1": "Premier Division (İrlanda)",
+    "isl.1": "Besta deild (İzlanda)",
+    "jpn.1": "J1 League (Japonya)",
+    "kor.1": "K League 1 (G. Kore)",
+    "arg.1": "Liga Profesional (Arjantin)",
+    "mex.1": "Liga MX (Meksika)",
     "bra.1": "Serie A (Brezilya)",
+    "bra.2": "Serie B (Brezilya)",
     "usa.1": "MLS (ABD)",
 }
+
+# Scoreboard calls are independent; fetch them concurrently so a ~28-league
+# bulletin loads in ~1 network round trip instead of 28 sequential ones.
+FETCH_WORKERS = 8
 
 # ESPN match states → our short status codes (NS = not started).
 _STATE_TO_STATUS = {"pre": "NS", "in": "LIVE", "post": "FT"}
@@ -82,12 +104,21 @@ def get_fixtures(date_str: str) -> list:
         return _cache[cache_key]
 
     espn_date = date_str.replace("-", "")
-    fixtures = []
-    for slug, league_name in LEAGUES.items():
+
+    def _fetch(slug):
         try:
-            payload = _get(f"{API_BASE_URL}/{slug}/scoreboard", {"dates": espn_date})
+            return slug, _get(f"{API_BASE_URL}/{slug}/scoreboard", {"dates": espn_date})
         except ApiError:
+            return slug, None
+
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        results = list(pool.map(_fetch, LEAGUES))
+
+    fixtures = []
+    for slug, payload in results:
+        if payload is None:
             continue
+        league_name = LEAGUES[slug]
         for event in payload.get("events", []):
             competition = event["competitions"][0]
             home, away = _sides(competition)
@@ -103,6 +134,7 @@ def get_fixtures(date_str: str) -> list:
                 "goals": {"home": home.get("score"), "away": away.get("score")},
             })
 
+    fixtures.sort(key=lambda f: f["kickoff"])
     _cache[cache_key] = fixtures
     return fixtures
 

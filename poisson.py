@@ -111,22 +111,28 @@ def fair_odds(probability: float) -> float:
     return round(1 / probability, 2)
 
 
-def best_pick(prediction: dict) -> dict:
+def best_pick(prediction: dict, min_odds: float = 0.0) -> dict | None:
     """Highest-probability selection across broad markets only.
 
     Exact scores are deliberately excluded: their probabilities are
     inherently low and would never win, but excluding them makes the
     guarantee explicit.
+
+    min_odds filters to selections whose fair odds meet the threshold
+    (coupon modes like "2.00+"); returns None when nothing qualifies.
     """
     best = None
     for (market, selection), label in _PICK_LABELS.items():
         prob = prediction[market][selection]
+        odds = fair_odds(prob)
+        if odds < min_odds:
+            continue
         if best is None or prob > best["probability"]:
             best = {
                 "market": market,
                 "selection": selection,
                 "label": label,
                 "probability": prob,
-                "fair_odds": fair_odds(prob),
+                "fair_odds": odds,
             }
     return best

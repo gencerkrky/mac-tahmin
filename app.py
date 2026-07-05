@@ -19,10 +19,14 @@ load_dotenv()
 
 app = Flask(__name__, static_folder="static")
 
-# Coupon analysis is request-hungry (2 form calls per match); cap candidates
-# so one coupon costs at most ~24 of the free tier's ~100 daily requests.
-MAX_COUPON_CANDIDATES = 12
+# ESPN is quota-free; the cap only bounds coupon latency (2 form calls/match).
+MAX_COUPON_CANDIDATES = 20
 DEFAULT_COUPON_SIZE = 5
+
+# Coupon modes: minimum fair odds a pick must have to enter the coupon.
+# "safe" takes the most probable pick regardless of odds; "value" mimics the
+# user's iddaa habit of only playing 2.00+ selections.
+COUPON_MODES = {"safe": 0.0, "balanced": 1.5, "value": 2.0}
 
 # Only not-yet-started fixtures make sense for predictions.
 UPCOMING_STATUSES = {"NS", "TBD"}
@@ -31,19 +35,25 @@ UPCOMING_STATUSES = {"NS", "TBD"}
 _ai_cache: dict = {}
 
 
-def predict_fixture(fx: dict) -> dict:
-    """Combine both teams' form into a full prediction for one fixture."""
+def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
+    """Combine both teams' form into a full prediction for one fixture.
+
+    Returns None when no selection clears min_odds (mode-filtered coupons).
+    """
     home_form = get_team_form(fx["home"]["id"], fx["league_slug"])
     away_form = get_team_form(fx["away"]["id"], fx["league_slug"])
     prediction = predict(
         home_form["scored_avg"], home_form["conceded_avg"],
         away_form["scored_avg"], away_form["conceded_avg"],
     )
+    pick = best_pick(prediction, min_odds=min_odds)
+    if pick is None:
+        return None
     return {
         "fixture": fx,
         "form": {"home": home_form, "away": away_form},
         "prediction": prediction,
-        "best_pick": best_pick(prediction),
+        "best_pick": pick,
     }
 
 
@@ -135,15 +145,20 @@ def analyze():
 def coupon():
     date_str = _parse_date(request.args.get("date", ""))
     size = request.args.get("size", default=DEFAULT_COUPON_SIZE, type=int)
+    mode = request.args.get("mode", "safe")
     if not date_str:
         return jsonify({"error": "Geçersiz tarih. Beklenen format: YYYY-MM-DD"}), 400
     if not 1 <= size <= MAX_COUPON_CANDIDATES:
         return jsonify({"error": f"Kupon boyutu 1-{MAX_COUPON_CANDIDATES} arası olmalı"}), 400
+    if mode not in COUPON_MODES:
+        return jsonify({"error": f"Geçersiz mod. Seçenekler: {', '.join(COUPON_MODES)}"}), 400
 
+    min_odds = COUPON_MODES[mode]
     try:
         upcoming = [f for f in get_fixtures(date_str) if f["status"] in UPCOMING_STATUSES]
         candidates = upcoming[:MAX_COUPON_CANDIDATES]
-        analysed = [predict_fixture(fx) for fx in candidates]
+        analysed = [item for fx in candidates
+                    if (item := predict_fixture(fx, min_odds=min_odds)) is not None]
     except ApiError as exc:
         return jsonify({"error": str(exc)}), 502
 
