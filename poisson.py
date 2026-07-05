@@ -36,6 +36,14 @@ H2H_MAX_WEIGHT = 0.25
 # Meetings needed for full H2H weight; fewer meetings scale linearly.
 H2H_FULL_MEETINGS = 4
 
+# Recency decay: each older match counts (1 - RECENCY_DECAY) as much as the
+# one after it, so recent form dominates without ignoring older matches.
+RECENCY_DECAY = 0.12
+
+# How strongly to correct a goal tally for the opponent's defensive quality.
+# 1.0 = full correction, 0 = ignore opponent. Kept moderate to avoid overfitting.
+OPPONENT_ADJ_STRENGTH = 0.5
+
 
 def shrink_to_league_avg(avg: float, matches: int) -> float:
     """Pull a small-sample average toward the league average (Bayes shrinkage)."""
@@ -53,6 +61,36 @@ def blend_with_h2h(form_avg: float, h2h_avg: float, meetings: int) -> float:
         return form_avg
     weight = H2H_MAX_WEIGHT * min(1.0, meetings / H2H_FULL_MEETINGS)
     return round((1 - weight) * form_avg + weight * h2h_avg, 3)
+
+
+def weighted_average(values: list) -> float:
+    """Recency-weighted mean of a chronological list (oldest first).
+
+    The most recent match gets weight 1, each older one is multiplied by
+    (1 - RECENCY_DECAY) again, so form trends are captured.
+    """
+    if not values:
+        return 0.0
+    n = len(values)
+    weights = [(1 - RECENCY_DECAY) ** (n - 1 - i) for i in range(n)]
+    total_w = sum(weights)
+    return round(sum(v * w for v, w in zip(values, weights)) / total_w, 3)
+
+
+def adjust_for_opponent(goals: float, opponent_conceded_avg: float,
+                        league_avg: float) -> float:
+    """Scale a goal tally by how good the opponent's defence was.
+
+    Scoring against a stingy defence (conceded < league avg) counts for more;
+    scoring against a leaky one counts for less. The correction is dampened by
+    OPPONENT_ADJ_STRENGTH so a single soft opponent can't dominate.
+    """
+    if opponent_conceded_avg <= 0:
+        return goals
+    # ratio < 1 → opponent tougher than average → inflate the goals.
+    ratio = league_avg / opponent_conceded_avg
+    adjusted = goals * (1 + OPPONENT_ADJ_STRENGTH * (ratio - 1))
+    return round(max(adjusted, 0.0), 3)
 
 
 def _poisson_pmf(lam: float, k: int) -> float:

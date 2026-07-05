@@ -25,8 +25,9 @@ BASKETBALL_LEAGUES = {
 }
 BASKETBALL_FORM_GAMES = 10
 
-# How many most-recent finished matches feed the form averages.
-FORM_MATCH_COUNT = 10
+# How many most-recent finished matches feed the form averages. Larger than
+# before so home/away splits still have enough games each.
+FORM_MATCH_COUNT = 30
 
 # Fallback profile when a team has no finished matches yet: assume a
 # league-average side (mirrors poisson.LEAGUE_AVG_GOALS).
@@ -309,7 +310,13 @@ def get_h2h(league_slug: str, event_id: str, home_team_id: str) -> dict:
 
 
 def get_team_form(team_id: str, league_slug: str) -> dict:
-    """Scoring/conceding averages over the team's last finished matches."""
+    """Recent match log for a team, split by venue, most-recent first.
+
+    Returns raw per-match records (goals for/against, venue, opponent id) so
+    the prediction layer can apply recency weighting, home/away splitting and
+    opponent-strength correction. Aggregate averages are included for the
+    fallback / display path.
+    """
     cache_key = ("form", league_slug, team_id)
     if cache_key in _cache:
         return _cache[cache_key]
@@ -322,33 +329,53 @@ def get_team_form(team_id: str, league_slug: str) -> dict:
         if not competition["status"]["type"]["completed"]:
             continue
         finished.append((event["date"], competition))
-    # Most recent first; keep only the form window.
     finished.sort(key=lambda pair: pair[0], reverse=True)
     finished = finished[:FORM_MATCH_COUNT]
 
-    scored = conceded = 0.0
-    matches = 0
+    matches = []  # most-recent first
     for _, competition in finished:
         home, away = _sides(competition)
         if str(home["team"]["id"]) == str(team_id):
-            scored += _score_value(home)
-            conceded += _score_value(away)
+            matches.append({
+                "scored": _score_value(home), "conceded": _score_value(away),
+                "venue": "home", "opponent_id": str(away["team"]["id"]),
+            })
         else:
-            scored += _score_value(away)
-            conceded += _score_value(home)
-        matches += 1
+            matches.append({
+                "scored": _score_value(away), "conceded": _score_value(home),
+                "venue": "away", "opponent_id": str(home["team"]["id"]),
+            })
 
-    if matches == 0:
-        # New team / no data: league-average profile keeps the model running
-        # with an honest low-confidence prediction.
+    if not matches:
         form = {"scored_avg": FALLBACK_GOAL_AVG, "conceded_avg": FALLBACK_GOAL_AVG,
-                "matches": 0}
+                "matches": 0, "log": []}
     else:
         form = {
-            "scored_avg": round(scored / matches, 3),
-            "conceded_avg": round(conceded / matches, 3),
-            "matches": matches,
+            "scored_avg": round(sum(m["scored"] for m in matches) / len(matches), 3),
+            "conceded_avg": round(sum(m["conceded"] for m in matches) / len(matches), 3),
+            "matches": len(matches),
+            "log": matches,
         }
 
     _cache[cache_key] = form
     return form
+
+
+def get_league_avg_conceded(league_slug: str, team_ids: list) -> float:
+    """Average goals conceded per team across the given teams in a league.
+
+    Used as the opponent-strength baseline. Falls back to the global constant
+    if no data is available. Each team's form is cached, so this is cheap when
+    the teams were already fetched for predictions.
+    """
+    totals = []
+    for tid in team_ids:
+        try:
+            form = get_team_form(tid, league_slug)
+        except ApiError:
+            continue
+        if form["matches"] > 0:
+            totals.append(form["conceded_avg"])
+    if not totals:
+        return FALLBACK_GOAL_AVG
+    return round(sum(totals) / len(totals), 3)

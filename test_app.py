@@ -9,6 +9,28 @@ def _item(prob, odds):
     return {"best_pick": {"probability": prob, "fair_odds": odds}}
 
 
+def _log(entries):
+    # entries: (scored, conceded, venue) most-recent first
+    return [{"scored": s, "conceded": c, "venue": v, "opponent_id": "x"}
+            for s, c, v in entries]
+
+
+def test_venue_weighted_avg_prefers_matching_venue():
+    # Evde bol gol (3), deplasmanda az (0). 'home' istenince eve yakın olmalı.
+    log = _log([(3, 0, "home"), (0, 2, "away"), (3, 1, "home"), (0, 1, "away")])
+    home_scored = app_module.venue_weighted(log, "home", "scored")
+    away_scored = app_module.venue_weighted(log, "away", "scored")
+    assert home_scored > away_scored
+    assert home_scored > 2                       # evde güçlü hücum yakalanmalı
+
+
+def test_venue_weighted_falls_back_to_all_when_venue_empty():
+    # Hiç deplasman maçı yoksa genel forma düşer (boş dönmez).
+    log = _log([(2, 1, "home"), (3, 0, "home")])
+    val = app_module.venue_weighted(log, "away", "scored")
+    assert val > 0                               # genel ortalamadan geldi
+
+
 def test_pick_top_predictions_orders_and_limits():
     items = [_item(0.55, 1.82), _item(0.79, 1.27), _item(0.61, 1.64)]
     coupon = pick_top_predictions(items, size=2)

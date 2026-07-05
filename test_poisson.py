@@ -98,7 +98,40 @@ def test_best_pick_min_odds_none_when_impossible():
     assert best_pick(p, min_odds=100.0) is None
 
 
-from poisson import blend_with_h2h, shrink_to_league_avg
+from poisson import (blend_with_h2h, shrink_to_league_avg,
+                     weighted_average, adjust_for_opponent)
+
+
+def test_weighted_average_recent_matches_count_more():
+    # Eski maçlar 0 gol, son maç 4 gol. Ağırlıklı ortalama basit ortalamadan yüksek.
+    values = [0, 0, 0, 0, 4]     # kronolojik: en eski → en yeni
+    simple = sum(values) / len(values)          # 0.8
+    weighted = weighted_average(values)
+    assert weighted > simple                    # son maç daha ağır
+    assert weighted <= 4
+
+
+def test_weighted_average_empty_is_zero():
+    assert weighted_average([]) == 0.0
+
+
+def test_weighted_average_uniform_equals_simple():
+    # Tüm değerler eşitse ağırlık fark etmez.
+    assert weighted_average([2, 2, 2]) == pytest.approx(2.0)
+
+
+def test_adjust_for_opponent_strong_opponent_boosts_value():
+    # Zayıf savunmaya (çok gol yiyen) atılan gol daha az değerli.
+    # Rakip lig ortalamasından çok gol yiyorsa (zayıf), gol enflasyonu düşürülür.
+    weak_def = adjust_for_opponent(goals=3, opponent_conceded_avg=2.5, league_avg=1.35)
+    strong_def = adjust_for_opponent(goals=3, opponent_conceded_avg=0.5, league_avg=1.35)
+    # Güçlü savunmaya atılan 3 gol, zayıf savunmaya atılandan daha değerli.
+    assert strong_def > weak_def
+
+
+def test_adjust_for_opponent_average_opponent_unchanged():
+    v = adjust_for_opponent(goals=2, opponent_conceded_avg=1.35, league_avg=1.35)
+    assert v == pytest.approx(2.0)
 
 
 def test_shrink_pulls_small_samples_toward_league_avg():

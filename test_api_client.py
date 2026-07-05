@@ -97,6 +97,10 @@ def test_get_team_form_averages(monkeypatch):
     assert form["matches"] == 2                       # upcoming match ignored
     assert form["scored_avg"] == pytest.approx(2.0)   # (3 + 1) / 2
     assert form["conceded_avg"] == pytest.approx(0.5) # (1 + 0) / 2
+    # Yeni: maç maçlık log, iç/dış ve rakip bilgisiyle.
+    assert len(form["log"]) == 2
+    assert {m["venue"] for m in form["log"]} == {"home", "away"}
+    assert form["log"][0]["opponent_id"]              # rakip id dolu
 
 
 def test_get_team_form_no_data_falls_back(monkeypatch):

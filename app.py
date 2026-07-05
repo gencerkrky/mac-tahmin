@@ -14,9 +14,11 @@ from flask import Flask, jsonify, request
 import store
 from ai_analysis import AiError, analyze_prediction
 from api_client import (ApiError, LEAGUES, get_basketball_fixtures,
-                        get_basketball_form, get_fixtures, get_h2h, get_team_form)
+                        get_basketball_form, get_fixtures, get_h2h,
+                        get_league_avg_conceded, get_team_form)
 from basketball import predict_basketball
-from poisson import best_pick, blend_with_h2h, predict, shrink_to_league_avg
+from poisson import (adjust_for_opponent, best_pick, blend_with_h2h,
+                     predict, shrink_to_league_avg, weighted_average)
 
 load_dotenv()
 
@@ -35,25 +37,87 @@ COUPON_MODES = {"safe": 0.0, "balanced": 1.5, "value": 2.0}
 # Only not-yet-started fixtures make sense for predictions.
 UPCOMING_STATUSES = {"NS", "TBD"}
 
+# Minimum venue-specific matches before we trust a home/away split; below this
+# we blend toward the team's overall form so a 1-game sample can't dominate.
+MIN_VENUE_MATCHES = 4
+
+
+def venue_weighted(log: list, venue: str, key: str) -> float:
+    """Recency-weighted average of `key` (scored/conceded) for one venue.
+
+    Falls back to the full log when the team has too few matches at that venue,
+    so a side with only away games still gets a usable home estimate.
+    """
+    if not log:
+        return 0.0
+    venue_vals = [m[key] for m in log if m["venue"] == venue]
+    all_vals = [m[key] for m in log]
+    # weighted_average expects oldest-first; the log is most-recent-first.
+    if len(venue_vals) >= MIN_VENUE_MATCHES:
+        return weighted_average(list(reversed(venue_vals)))
+    if not venue_vals:
+        return weighted_average(list(reversed(all_vals)))
+    # Blend the thin venue sample with overall form.
+    venue_w = weighted_average(list(reversed(venue_vals)))
+    all_w = weighted_average(list(reversed(all_vals)))
+    frac = len(venue_vals) / MIN_VENUE_MATCHES
+    return round(frac * venue_w + (1 - frac) * all_w, 3)
+
 # AI analyses are paid API calls; cache per fixture for the process lifetime.
 _ai_cache: dict = {}
 
 
-def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
-    """Combine both teams' form into a full prediction for one fixture.
+def _opponent_adjusted_avg(log: list, venue: str, league_avg: float,
+                           get_conceded) -> float:
+    """Venue-weighted goals scored, each match corrected for how tough that
+    opponent's defence was. get_conceded(opponent_id) -> conceded avg."""
+    if not log:
+        return 0.0
+    venue_matches = [m for m in log if m["venue"] == venue]
+    matches = venue_matches if len(venue_matches) >= MIN_VENUE_MATCHES else log
+    adjusted = [adjust_for_opponent(m["scored"], get_conceded(m["opponent_id"]),
+                                    league_avg) for m in matches]
+    # weighted_average expects oldest-first.
+    return weighted_average(list(reversed(adjusted)))
 
+
+def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
+    """Full prediction for one fixture using the enhanced form model.
+
+    Layers, in order: home/away split → recency weighting → opponent-strength
+    correction → small-sample shrinkage → head-to-head blend.
     Returns None when no selection clears min_odds (mode-filtered coupons).
     """
-    home_form = get_team_form(fx["home"]["id"], fx["league_slug"])
-    away_form = get_team_form(fx["away"]["id"], fx["league_slug"])
-    h2h = get_h2h(fx["league_slug"], fx["fixture_id"], fx["home"]["id"])
+    slug = fx["league_slug"]
+    home_form = get_team_form(fx["home"]["id"], slug)
+    away_form = get_team_form(fx["away"]["id"], slug)
+    h2h = get_h2h(slug, fx["fixture_id"], fx["home"]["id"])
 
-    # Small samples get pulled toward the league average, then head-to-head
-    # history nudges both attack (own h2h goals) and defence (opponent's).
-    hs = shrink_to_league_avg(home_form["scored_avg"], home_form["matches"])
-    hc = shrink_to_league_avg(home_form["conceded_avg"], home_form["matches"])
-    as_ = shrink_to_league_avg(away_form["scored_avg"], away_form["matches"])
-    ac = shrink_to_league_avg(away_form["conceded_avg"], away_form["matches"])
+    # Opponent-strength baseline: average conceded across both teams' recent
+    # opponents (cheap — those teams' forms are cached after this call).
+    opp_ids = {m["opponent_id"] for m in home_form["log"]} | \
+              {m["opponent_id"] for m in away_form["log"]}
+    league_avg = get_league_avg_conceded(slug, list(opp_ids)) if opp_ids else 1.35
+
+    def conceded_of(team_id: str) -> float:
+        try:
+            return get_team_form(team_id, slug)["conceded_avg"] or league_avg
+        except ApiError:
+            return league_avg
+
+    # Expected goals: attack (opponent-adjusted, venue-specific) meets the
+    # opposing side's venue-specific defence.
+    home_attack = _opponent_adjusted_avg(home_form["log"], "home", league_avg, conceded_of)
+    away_attack = _opponent_adjusted_avg(away_form["log"], "away", league_avg, conceded_of)
+    home_def = venue_weighted(home_form["log"], "home", "conceded")
+    away_def = venue_weighted(away_form["log"], "away", "conceded")
+
+    # Shrink thin samples toward the league average.
+    hs = shrink_to_league_avg(home_attack, home_form["matches"])
+    hc = shrink_to_league_avg(home_def, home_form["matches"])
+    as_ = shrink_to_league_avg(away_attack, away_form["matches"])
+    ac = shrink_to_league_avg(away_def, away_form["matches"])
+
     m = h2h["meetings"]
     prediction = predict(
         blend_with_h2h(hs, h2h["home_scored_avg"], m),
