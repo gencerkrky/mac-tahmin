@@ -90,3 +90,43 @@ def predict(home_scored_avg, home_conceded_avg, away_scored_avg, away_conceded_a
             "probability": round(best_prob, 4),
         },
     }
+
+
+# Human-readable labels for every broad-market selection (Turkish UI copy).
+_PICK_LABELS = {
+    ("match_result", "home"): "Ev sahibi kazanır",
+    ("match_result", "draw"): "Beraberlik",
+    ("match_result", "away"): "Deplasman kazanır",
+    ("over_under_25", "over"): "2.5 Üst",
+    ("over_under_25", "under"): "2.5 Alt",
+    ("btts", "yes"): "KG Var",
+    ("btts", "no"): "KG Yok",
+}
+
+
+def fair_odds(probability: float) -> float:
+    """Fair (no-margin) decimal odds implied by a probability."""
+    if probability <= 0:
+        return float("inf")
+    return round(1 / probability, 2)
+
+
+def best_pick(prediction: dict) -> dict:
+    """Highest-probability selection across broad markets only.
+
+    Exact scores are deliberately excluded: their probabilities are
+    inherently low and would never win, but excluding them makes the
+    guarantee explicit.
+    """
+    best = None
+    for (market, selection), label in _PICK_LABELS.items():
+        prob = prediction[market][selection]
+        if best is None or prob > best["probability"]:
+            best = {
+                "market": market,
+                "selection": selection,
+                "label": label,
+                "probability": prob,
+                "fair_odds": fair_odds(prob),
+            }
+    return best

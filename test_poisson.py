@@ -48,3 +48,30 @@ def test_zero_averages_do_not_crash():
     # Hiç gol atamayan takım: model çökmemeli, deplasman/beraberlik öne çıkmalı.
     p = predict(0.0, 1.0, 1.0, 1.0)
     assert p["match_result"]["home"] < p["match_result"]["away"] + p["match_result"]["draw"]
+
+
+from poisson import best_pick, fair_odds
+
+
+def test_fair_odds_inverse_of_probability():
+    assert fair_odds(0.5) == pytest.approx(2.0)
+    assert fair_odds(0.79) == pytest.approx(1.27, abs=0.01)
+
+
+def test_fair_odds_zero_probability_is_infinite():
+    assert fair_odds(0.0) == float("inf")
+
+
+def test_best_pick_selects_highest_broad_market():
+    # Güçlü ev sahibi: en emin tahmin 'ev kazanır' olmalı, kesin skor asla seçilmez.
+    p = predict(2.5, 0.5, 0.7, 2.2)
+    pick = best_pick(p)
+    assert pick["market"] == "match_result"
+    assert pick["selection"] == "home"
+    assert pick["probability"] == p["match_result"]["home"]
+    assert pick["fair_odds"] == fair_odds(pick["probability"])
+
+
+def test_best_pick_never_returns_exact_score():
+    p = predict(1.0, 1.0, 1.0, 1.0)
+    assert best_pick(p)["market"] != "most_likely_score"
