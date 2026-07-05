@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maç Tahmin Paneli</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0;
+          --muted:#94a3b8; --accent:#fbbf24; --good:#34d399; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:var(--bg);
+         color:var(--text); padding:1rem; max-width:960px; margin:0 auto; }
+  h1 { font-size:1.3rem; margin-bottom:.75rem; }
+  .bar { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:1rem; }
+  select,button { background:var(--card); color:var(--text); border:1px solid var(--line);
+                  border-radius:8px; padding:.5rem .75rem; font-size:.95rem; }
+  button.primary { background:var(--accent); color:#111; font-weight:600; cursor:pointer; }
+  .note { color:var(--muted); font-size:.8rem; margin:.5rem 0 1rem; }
+  .match { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:.7rem .9rem; margin-bottom:.5rem; cursor:pointer; }
+  .match:hover { border-color:var(--accent); }
+  .match .meta { color:var(--muted); font-size:.78rem; }
+  .match .teams { font-weight:600; margin-top:.15rem; }
+  .pred { margin-top:.6rem; border-top:1px dashed var(--line); padding-top:.6rem;
+          display:grid; gap:.25rem; font-size:.9rem; }
+  .pred .row { display:flex; justify-content:space-between; }
+  .pred .star { color:var(--accent); font-weight:700; }
+  .odds { color:var(--good); }
+  .odds.hot { color:#fb7185; font-weight:700; } /* fair odds >= 2.00: value flag */
+  #coupon { background:var(--card); border:1px solid var(--accent); border-radius:10px;
+            padding:1rem; margin-bottom:1rem; display:none; }
+  #coupon h2 { font-size:1.05rem; color:var(--accent); margin-bottom:.5rem; }
+  #coupon .totals { margin-top:.6rem; font-weight:600; }
+  .err { color:#f87171; margin:.5rem 0; }
+  .spin { color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>⚽ Maç Tahmin Paneli</h1>
+
+<div class="bar">
+  <label>Tarih: <select id="dateSel"></select></label>
+  <label>Kupon: <select id="sizeSel">
+    <option>3</option><option selected>5</option><option>7</option>
+  </select> maç</label>
+  <button class="primary" id="couponBtn">🎫 En Emin Kuponu Oluştur</button>
+</div>
+<p class="note">Olasılıklar Poisson modelinin tahminidir; kesinlik garanti etmez.
+Oranlar modelin <em>adil oranlarıdır</em>, bahis şirketi oranı değildir.</p>
+
+<div id="msg"></div>
+<div id="coupon"></div>
+<div id="list"></div>
+
+<script>
+const list = document.getElementById("list");
+const msg = document.getElementById("msg");
+const couponBox = document.getElementById("coupon");
+const dateSel = document.getElementById("dateSel");
+
+// Next 4 days as selectable dates (today first).
+for (let i = 0; i < 4; i++) {
+  const d = new Date(); d.setDate(d.getDate() + i);
+  const iso = d.toISOString().slice(0, 10);
+  const opt = new Option(i === 0 ? `Bugün (${iso})` : iso, iso);
+  dateSel.add(opt);
+}
+
+const pct = p => (p * 100).toFixed(0) + "%";
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function predRows(p, best) {
+  const rows = [
+    ["match_result", "home", "Ev sahibi kazanır", p.match_result.home],
+    ["match_result", "draw", "Beraberlik", p.match_result.draw],
+    ["match_result", "away", "Deplasman kazanır", p.match_result.away],
+    ["over_under_25", "over", "2.5 Üst", p.over_under_25.over],
+    ["over_under_25", "under", "2.5 Alt", p.over_under_25.under],
+    ["btts", "yes", "KG Var", p.btts.yes],
+    ["btts", "no", "KG Yok", p.btts.no],
+  ];
+  const html = rows.map(([m, s, label, prob]) => {
+    const isBest = best.market === m && best.selection === s;
+    const cls = isBest ? "star" : "";
+    const star = isBest ? "⭐ " : "";
+    const odds = 1 / prob;
+    const oddsCls = odds >= 2 ? "odds hot" : "odds";  // 2.00+ = value pick
+    return `<div class="row ${cls}"><span>${star}${label}</span>
+            <span>${pct(prob)} <span class="${oddsCls}">@${odds.toFixed(2)}</span></span></div>`;
+  }).join("");
+  const s = p.most_likely_score;
+  return html + `<div class="row"><span>En olası skor</span>
+    <span>${s.home}-${s.away} (${pct(s.probability)})</span></div>`;
+}
+
+async function loadFixtures() {
+  list.innerHTML = ""; msg.innerHTML = '<p class="spin">Maçlar yükleniyor…</p>';
+  try {
+    const data = await getJSON(`/api/fixtures?date=${dateSel.value}`);
+    msg.innerHTML = "";
+    if (!data.fixtures.length) {
+      msg.innerHTML = '<p class="note">Bu tarihte seçili liglerde maç yok.</p>'; return;
+    }
+    for (const f of data.fixtures) {
+      const el = document.createElement("div");
+      el.className = "match";
+      el.innerHTML = `<div class="meta">${f.country} · ${f.league} · ${f.kickoff.slice(11,16)} (${f.status})</div>
+        <div class="teams">${f.home.name} — ${f.away.name}</div>
+        <div class="pred" hidden></div>`;
+      el.addEventListener("click", () => showPrediction(el, f), { once: false });
+      list.appendChild(el);
+    }
+  } catch (e) { msg.innerHTML = `<p class="err">${e.message}</p>`; }
+}
+
+async function showPrediction(el, f) {
+  const box = el.querySelector(".pred");
+  if (!box.hidden) { box.hidden = true; return; }
+  if (box.dataset.loaded) { box.hidden = false; return; }
+  box.hidden = false; box.innerHTML = '<span class="spin">Analiz ediliyor…</span>';
+  try {
+    const d = await getJSON(`/api/predict?fixture=${f.fixture_id}&date=${dateSel.value}`);
+    box.innerHTML = predRows(d.prediction, d.best_pick);
+    box.dataset.loaded = "1";
+  } catch (e) { box.innerHTML = `<span class="err">${e.message}</span>`; }
+}
+
+document.getElementById("couponBtn").addEventListener("click", async () => {
+  couponBox.style.display = "block";
+  couponBox.innerHTML = '<span class="spin">Maçlar analiz ediliyor (biraz sürebilir)…</span>';
+  const size = document.getElementById("sizeSel").value;
+  try {
+    const c = await getJSON(`/api/coupon?date=${dateSel.value}&size=${size}`);
+    if (!c.picks.length) {
+      couponBox.innerHTML = '<p class="note">Bu tarihte analiz edilecek başlamamış maç yok.</p>'; return;
+    }
+    const rows = c.picks.map(p => {
+      const f = p.fixture, b = p.best_pick;
+      return `<div class="row"><span>${f.home.name} — ${f.away.name}</span>
+        <span class="star">${b.label} ${pct(b.probability)} <span class="odds">@${b.fair_odds}</span></span></div>`;
+    }).join("");
+    const skipped = c.skipped_count
+      ? `<p class="note">Kota koruması: ${c.skipped_count} maç analiz dışı bırakıldı.</p>` : "";
+    couponBox.innerHTML = `<h2>🎫 En Emin ${c.picks.length} Maç</h2><div class="pred">${rows}</div>
+      <div class="totals">Toplam adil oran: <span class="odds">${c.total_odds}</span> ·
+      Birleşik isabet: ${pct(c.combined_probability)}</div>${skipped}`;
+  } catch (e) { couponBox.innerHTML = `<p class="err">${e.message}</p>`; }
+});
+
+dateSel.addEventListener("change", loadFixtures);
+loadFixtures();
+</script>
+</body>
+</html>
