@@ -32,6 +32,15 @@
   .totals { margin-top:.5rem; font-weight:600; }
   .err { color:#f87171; }
   .spin { color:var(--muted); }
+  .scoreList { margin-top:.4rem; font-size:.85rem; }
+  .scoreList summary { cursor:pointer; color:var(--accent); }
+  .scoreGrid { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem; }
+  .scoreChip { background:#0f172a; border:1px solid var(--line); border-radius:6px;
+               padding:.2rem .45rem; font-size:.82rem; }
+  .sportTabs { display:flex; gap:.5rem; margin:.5rem 0; }
+  .sportTabs button { background:var(--card); color:var(--text); border:1px solid var(--line);
+                      border-radius:8px; padding:.45rem 1rem; cursor:pointer; }
+  .sportTabs button.active { background:var(--accent); color:#111; font-weight:600; }
 </style>
 </head>
 <body>
@@ -76,7 +85,50 @@ function predHTML(p, best) {
       <span>${pct(prob)} <span class="odds ${odds>=2?"hot":""}">@${odds.toFixed(2)}</span></span></div>`;
   }).join("");
   const sc = p.most_likely_score;
-  return rows + `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>`;
+  // Genişletilmiş marketler (yeni Poisson çıktısı varsa)
+  let extra = "";
+  if (p.over_under) {
+    const htftTop = Object.entries(p.htft).sort((a,b)=>b[1]-a[1]).slice(0,3)
+      .map(([k,v]) => `${k} (${pct(v)})`).join(" · ");
+    const scores = p.scorelines.slice(0,12).map(s =>
+      `<span class="scoreChip">${s.home}-${s.away} <span class="odds">@${(1/s.probability).toFixed(1)}</span></span>`).join("");
+    extra = `
+      <div class="row"><span>1.5 Üst / Alt</span><span>${pct(p.over_under["1.5"].over)} / ${pct(p.over_under["1.5"].under)}</span></div>
+      <div class="row"><span>3.5 Üst / Alt</span><span>${pct(p.over_under["3.5"].over)} / ${pct(p.over_under["3.5"].under)}</span></div>
+      <div class="row"><span>Çifte Şans (1X/12/X2)</span><span>${pct(p.double_chance["1X"])} / ${pct(p.double_chance["12"])} / ${pct(p.double_chance["X2"])}</span></div>
+      <div class="row"><span>Toplam Gol Tek / Çift</span><span>${pct(p.odd_even.odd)} / ${pct(p.odd_even.even)}</span></div>
+      <div class="row"><span>İY/MS (en olası 3)</span><span>${htftTop}</span></div>`;
+    extra += `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>
+      <details class="scoreList"><summary>📋 Tüm skorlar (oranlarıyla)</summary><div class="scoreGrid">${scores}</div></details>`;
+  } else {
+    extra = `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>`;
+  }
+  return rows + extra;
+}
+
+function basketballPredHTML(p) {
+  const mr = p.match_result, tl = p.total_line;
+  const rows = [
+    ["Ev sahibi kazanır", mr.home], ["Deplasman kazanır", mr.away],
+    [`${p.line} Üst`, tl.over], [`${p.line} Alt`, tl.under],
+  ].map(([label, prob]) => {
+    const isBest = p.best_pick.label === label;
+    return `<div class="row ${isBest?"star":""}"><span>${isBest?"⭐ ":""}${label}</span>
+      <span>${pct(prob)} <span class="odds">@${(1/prob).toFixed(2)}</span></span></div>`;
+  }).join("");
+  return rows +
+    `<div class="row"><span>Beklenen skor</span><span>${p.expected_points.home} - ${p.expected_points.away}</span></div>
+     <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? "Ev " : "Dep "}${Math.abs(p.spread)}</span></div>`;
+}
+
+function basketballDayHTML(day) {
+  if (!day.matches.length) return '<p class="note">Bu tarihte basketbol maçı yok (sezon arası olabilir).</p>';
+  return day.matches.map(m => {
+    const f = m.fixture;
+    const pred = m.prediction ? `<div class="pred">${basketballPredHTML(m.prediction)}</div>` : "";
+    return `<div class="match"><div class="meta">🏀 ${f.league} · ${localTime(f.kickoff)} (${f.status})</div>
+      <div class="teams">${f.home.name} — ${f.away.name}</div>${pred}</div>`;
+  }).join("");
 }
 
 function dayHTML(day) {
@@ -112,21 +164,37 @@ async function main() {
 
   const tabs = d.days.map((day,i) =>
     `<button data-i="${i}" class="${i===0?"active":""}">${i===0?"Bugün":"Yarın"} (${day.date})</button>`).join("");
+  const bball = d.basketball || [];
+  const bballTabs = bball.map((day,i) =>
+    `<button data-bi="${i}" class="${i===0?"active":""}">${i===0?"Bugün":"Yarın"} (${day.date})</button>`).join("");
 
   document.getElementById("content").innerHTML =
-    `<h2>🎫 Günün Kuponları</h2>${coupons}
-     <h2>📅 Bülten</h2><div class="tabs">${tabs}</div><div id="day"></div>
+    `<h2>🎫 Günün Kuponları (Futbol)</h2>${coupons}
+     <h2>⚽ Futbol Bülteni</h2><div class="tabs">${tabs}</div><div id="day"></div>
+     <h2>🏀 Basketbol Bülteni</h2><div class="tabs" id="bballTabs">${bballTabs}</div><div id="bballDay"></div>
      <h2>📜 Geçmiş & İsabet</h2>${historyItems}`;
 
   const dayBox = document.getElementById("day");
-  const render = i => { dayBox.innerHTML = dayHTML(d.days[i]); };
-  document.querySelectorAll(".tabs button").forEach(btn =>
+  document.querySelectorAll(".tabs:not(#bballTabs) button").forEach(btn =>
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tabs:not(#bballTabs) button").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      render(+btn.dataset.i);
+      dayBox.innerHTML = dayHTML(d.days[+btn.dataset.i]);
     }));
-  render(0);
+  dayBox.innerHTML = dayHTML(d.days[0]);
+
+  const bballBox = document.getElementById("bballDay");
+  if (bball.length) {
+    document.querySelectorAll("#bballTabs button").forEach(btn =>
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#bballTabs button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        bballBox.innerHTML = basketballDayHTML(bball[+btn.dataset.bi]);
+      }));
+    bballBox.innerHTML = basketballDayHTML(bball[0]);
+  } else {
+    bballBox.innerHTML = '<p class="note">Basketbol verisi yok.</p>';
+  }
 }
 main();
 </script>

@@ -16,9 +16,11 @@ import shutil
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from api_client import get_fixtures
+from api_client import (get_basketball_fixtures, get_basketball_form,
+                        get_fixtures)
 from app import (COUPON_MODES, DEFAULT_COUPON_SIZE, MAX_COUPON_CANDIDATES,
                  UPCOMING_STATUSES, pick_top_predictions, predict_fixture)
+from basketball import predict_basketball
 from store import pick_hit
 
 OUTPUT_DIR = Path("public")
@@ -122,6 +124,28 @@ def build_bulletin(start: date) -> list:
     return days
 
 
+def build_basketball(start: date) -> list:
+    """Basketball bulletin with per-game predictions (separate model)."""
+    days = []
+    for offset in range(BULLETIN_DAYS):
+        day = (start + timedelta(days=offset)).isoformat()
+        entries = []
+        for fx in get_basketball_fixtures(day):
+            entry = {"fixture": fx}
+            if fx["status"] in UPCOMING_STATUSES:
+                try:
+                    hf = get_basketball_form(fx["home"]["id"], fx["league_slug"])
+                    af = get_basketball_form(fx["away"]["id"], fx["league_slug"])
+                    entry["prediction"] = predict_basketball(
+                        hf["scored_avg"], hf["conceded_avg"],
+                        af["scored_avg"], af["conceded_avg"])
+                except Exception:
+                    pass  # veri eksikse tahminsiz göster
+            entries.append(entry)
+        days.append({"date": day, "matches": entries})
+    return days
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
     today = date.today()
@@ -138,6 +162,7 @@ def main() -> None:
     data = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "days": bulletin,
+        "basketball": build_basketball(today),
         "coupons": coupons,
         "history": sorted(history, key=lambda c: c["date"], reverse=True)[:60],
         "stats": {
