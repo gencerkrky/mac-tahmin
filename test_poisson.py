@@ -1,0 +1,50 @@
+"""poisson.py birim testleri — motor saf fonksiyondur, ağ gerektirmez."""
+import pytest
+
+from poisson import predict, LEAGUE_AVG_GOALS
+
+
+# Ortalama bir takımın girdileri: lig ortalamasında atar ve yer.
+AVG = LEAGUE_AVG_GOALS
+
+
+def test_probabilities_sum_to_one():
+    p = predict(AVG, AVG, AVG, AVG)
+    mr = p["match_result"]
+    assert mr["home"] + mr["draw"] + mr["away"] == pytest.approx(1.0, abs=0.01)
+    ou = p["over_under_25"]
+    assert ou["over"] + ou["under"] == pytest.approx(1.0, abs=0.01)
+    kg = p["btts"]
+    assert kg["yes"] + kg["no"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_equal_teams_home_advantage():
+    # Eşit güçte takımlarda ev avantajı ev galibiyetini öne geçirmeli.
+    p = predict(AVG, AVG, AVG, AVG)
+    assert p["match_result"]["home"] > p["match_result"]["away"]
+
+
+def test_strong_home_team_favoured():
+    # Çok gol atan / az yiyen ev sahibi, zayıf deplasmana karşı net favori.
+    p = predict(2.5, 0.5, 0.7, 2.2)
+    assert p["match_result"]["home"] > 0.6
+    assert p["expected_goals"]["home"] > p["expected_goals"]["away"]
+
+
+def test_high_scoring_teams_favour_over():
+    p = predict(2.4, 1.8, 2.1, 1.9)
+    assert p["over_under_25"]["over"] > p["over_under_25"]["under"]
+
+
+def test_most_likely_score_structure():
+    p = predict(AVG, AVG, AVG, AVG)
+    s = p["most_likely_score"]
+    assert isinstance(s["home"], int) and isinstance(s["away"], int)
+    # Kesin skor olasılığı doğası gereği düşüktür ama sıfır olamaz.
+    assert 0.0 < s["probability"] < 0.5
+
+
+def test_zero_averages_do_not_crash():
+    # Hiç gol atamayan takım: model çökmemeli, deplasman/beraberlik öne çıkmalı.
+    p = predict(0.0, 1.0, 1.0, 1.0)
+    assert p["match_result"]["home"] < p["match_result"]["away"] + p["match_result"]["draw"]
