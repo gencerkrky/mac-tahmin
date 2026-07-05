@@ -1,7 +1,19 @@
 # Futbol Maç Tahmin Sistemi — Tasarım Dokümanı
 
 **Tarih:** 2026-07-05
-**Durum:** Onaylandı, uygulamaya hazır
+**Durum:** Uygulandı (revize: veri kaynağı ESPN, AI analiz katmanı eklendi)
+
+> **Revizyon notu (uygulama sırasında):**
+> 1. **Veri kaynağı API-Football → ESPN public API.** API-Football ücretsiz
+>    planı yalnızca ±1 gün penceresine izin veriyor ve form verisi (`last`
+>    parametresi / geçmiş sezonlar) kapalı. ESPN site API'si anahtarsız ve
+>    kotasızdır; hem bülteni hem takım sezon sonuçlarını verir. Kota koruması
+>    maddeleri (12 maç sınırı hariç) önemini yitirdi; önbellek performans
+>    için korunuyor.
+> 2. **AI analiz katmanı eklendi** (kanca yerine gerçek özellik): kullanıcı
+>    Anthropic anahtarı sağladı. `ai_analysis.py`, Claude Fable 5 ile
+>    (Opus 4.8 sunucu taraflı fallback) tahmin yorumları üretir; sonuçlar
+>    fixture başına önbelleğe alınır.
 
 ## Amaç
 
