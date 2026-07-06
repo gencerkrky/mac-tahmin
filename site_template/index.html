@@ -7,7 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0;
-          --muted:#94a3b8; --accent:#fbbf24; --good:#34d399; }
+          --muted:#94a3b8; --accent:#fbbf24; --good:#34d399; --bad:#f87171; }
   * { box-sizing:border-box; margin:0; }
   body { font-family:-apple-system,system-ui,sans-serif; background:var(--bg);
          color:var(--text); padding:1rem; max-width:960px; margin:0 auto; }
@@ -50,6 +50,31 @@
   .mainTabs button.active { background:var(--accent); color:#111; font-weight:700; }
   .section { display:none; }
   .section.active { display:block; }
+  /* İstatistik özeti: büyük skor kartları */
+  .statGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+              gap:.6rem; margin:.6rem 0 1rem; }
+  .statCard { background:var(--card); border:1px solid var(--line); border-radius:10px;
+              padding:.8rem .9rem; }
+  .statCard .lbl { color:var(--muted); font-size:.72rem; text-transform:uppercase;
+                   letter-spacing:.04em; }
+  .statCard .big { font-size:1.7rem; font-weight:800; margin-top:.15rem;
+                   font-variant-numeric:tabular-nums; }
+  .statCard .sub2 { color:var(--muted); font-size:.75rem; margin-top:.15rem; }
+  .statCard.good .big { color:var(--good); }
+  .statCard.bad .big { color:var(--bad); }
+  /* Analiz: yatay çubuklar */
+  .bar { display:grid; grid-template-columns:5.5rem 1fr 3rem; align-items:center;
+         gap:.5rem; margin:.3rem 0; font-size:.82rem; }
+  .bar .track { background:#0f172a; border:1px solid var(--line); border-radius:5px;
+                height:.7rem; overflow:hidden; }
+  .bar .fill { height:100%; background:var(--good); }
+  .bar .fill.low { background:var(--bad); }
+  .bar .fill.mid { background:var(--accent); }
+  .bar .val { text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .insight { background:var(--card); border:1px solid var(--line);
+             border-left:3px solid var(--accent); border-radius:8px;
+             padding:.7rem .9rem; margin:.6rem 0; font-size:.86rem; line-height:1.5; }
+  .insight b { color:var(--text); }
 </style>
 </head>
 <body>
@@ -80,24 +105,109 @@ function couponHTML(c) {
 
 const MODE_LABELS_FULL = { safe:"🛡 Garanti", balanced:"⚖️ Dengeli", value:"🔥 Cesur" };
 
+// Bir isabet oranına göre çubuk rengi: kırmızı (kötü) → sarı → yeşil (iyi).
+function rateClass(rate) { return rate >= 0.6 ? "" : rate >= 0.5 ? "mid" : "low"; }
+
+// Yatay isabet çubuğu: etiket · dolu çubuk · "x/y" değeri.
+function barHTML(label, hits, total) {
+  if (!total) return "";
+  const rate = hits / total;
+  return `<div class="bar"><span>${label}</span>
+    <span class="track"><span class="fill ${rateClass(rate)}" style="width:${(rate*100).toFixed(0)}%"></span></span>
+    <span class="val">${hits}/${total}</span></div>`;
+}
+
+// Verilerden otomatik, dürüst bir yorum üretir (örnek sayısına göre uyarır).
+function buildInsight(ov, byMode, cal) {
+  const n = ov.pick_total;
+  if (n < 15) {
+    return `<div class="insight">⚠️ <b>Örnek çok küçük (${n} tahmin).</b>
+      Bu oranlar henüz güvenilir değil — istatistiksel olarak anlamlı sonuç için
+      en az 30-50 sonuçlanmış tahmin gerekir. Sistem her gün otomatik veri
+      biriktiriyor; birkaç gün sonra bu bölüm anlam kazanacak.</div>`;
+  }
+  // En iyi çalışan güven aralığını bul (yeterli örneği olanlar arasında).
+  let best = null;
+  for (const [band, b] of Object.entries(cal)) {
+    if (b.total >= 3 && (!best || b.hits/b.total > best.rate))
+      best = { band, rate: b.hits/b.total, total: b.total };
+  }
+  const bestModeEntry = Object.entries(byMode)
+    .filter(([, b]) => b.pick_total >= 3)
+    .sort((a, b) => (b[1].pick_rate||0) - (a[1].pick_rate||0))[0];
+  let msg = `<div class="insight">📊 <b>${n} tahminin ${ov.pick_hits}'i tuttu (%${(ov.pick_rate*100).toFixed(0)}).</b> `;
+  if (best)
+    msg += `Model en çok <b>${best.band}</b> güven aralığında isabetli
+      (%${(best.rate*100).toFixed(0)}). `;
+  if (bestModeEntry)
+    msg += `Modlar içinde <b>${MODE_LABELS_FULL[bestModeEntry[0]]||bestModeEntry[0]}</b>
+      en iyisi. `;
+  msg += `Yüksek oranı (Cesur mod) zorlayan tahminler doğası gereği daha az tutar —
+    yüksek kazanç, düşük olasılık demektir.</div>`;
+  return msg;
+}
+
 function buildStatsHTML(s) {
   const ov = s.overall || {};
   if (!ov.pick_total)
     return '<p class="note">Henüz sonuçlanmış kupon yok — maçlar bitince otomatik değerlendirilir.</p>';
+
+  // 1) Büyük özet kartları.
+  const pr = ov.pick_rate || 0;
+  const summaryCards = `<div class="statGrid">
+    <div class="statCard ${pr>=0.5?"good":"bad"}">
+      <div class="lbl">Tahmin isabeti</div>
+      <div class="big">%${(pr*100).toFixed(0)}</div>
+      <div class="sub2">${ov.pick_hits}/${ov.pick_total} tahmin</div></div>
+    <div class="statCard">
+      <div class="lbl">Tam tutan kupon</div>
+      <div class="big">${ov.coupon_wins}/${ov.coupon_total}</div>
+      <div class="sub2">6 maçın hepsi tutmalı</div></div>
+    <div class="statCard">
+      <div class="lbl">Değerlendirilen</div>
+      <div class="big">${ov.pick_total}</div>
+      <div class="sub2">sonuçlanmış tahmin</div></div>
+  </div>`;
+
+  // 2) Otomatik yorum.
+  const insight = buildInsight(ov, s.by_mode || {}, s.calibration || {});
+
+  // 3) Kalibrasyon: modelin dediği güven → gerçekte ne tuttu.
+  const cal = s.calibration || {};
+  const calBars = ["50-60%","60-70%","70-80%","80%+"]
+    .map(band => barHTML(band, (cal[band]||{}).hits||0, (cal[band]||{}).total||0))
+    .join("") || '<p class="note">Yeterli veri yok.</p>';
+
+  // 4) Pazar bazlı: hangi tahmin türü daha çok tutuyor.
+  const bm = s.by_market || {};
+  const marketBars = Object.entries(bm)
+    .sort((a,b) => b[1].total - a[1].total)
+    .map(([label, b]) => barHTML(label, b.hits, b.total))
+    .join("") || '<p class="note">Yeterli veri yok.</p>';
+
+  // 5) Mod karşılaştırması.
   const line = (b) => {
-    const pr = b.pick_rate != null ? `${(b.pick_rate*100).toFixed(0)}%` : "—";
+    const r = b.pick_rate != null ? `${(b.pick_rate*100).toFixed(0)}%` : "—";
     const cr = b.coupon_rate != null ? `${(b.coupon_rate*100).toFixed(0)}%` : "—";
     return `<div class="row"><span>Tahmin isabeti</span>
-              <span class="star">${b.pick_hits}/${b.pick_total} (${pr})</span></div>
+              <span class="star">${b.pick_hits}/${b.pick_total} (${r})</span></div>
             <div class="row"><span>Tam tutan kupon</span>
               <span>${b.coupon_wins}/${b.coupon_total} (${cr})</span></div>`;
   };
-  let html = `<div class="coupon"><div class="meta">Genel (tüm modlar)</div><div class="pred">${line(ov)}</div></div>`;
-  for (const [mode, b] of Object.entries(s.by_mode || {})) {
-    html += `<div class="coupon"><div class="meta">${MODE_LABELS_FULL[mode]||mode}</div>
+  let modeHTML = "";
+  for (const [mode, b] of Object.entries(s.by_mode || {}))
+    modeHTML += `<div class="coupon"><div class="meta">${MODE_LABELS_FULL[mode]||mode}</div>
              <div class="pred">${line(b)}</div></div>`;
-  }
-  return html;
+
+  return summaryCards + insight +
+    `<h2>🎯 Kalibrasyon — modelin güveni ne kadar doğru?</h2>
+     <p class="note">Model "%X eminim" dediğinde gerçekte ne kadar tuttu. İdeal olan yüksek aralıkların dolu olması.</p>
+     ${calBars}
+     <h2>📌 Tahmin türüne göre isabet</h2>
+     <p class="note">Hangi bahis türü daha güvenilir çıktı.</p>
+     ${marketBars}
+     <h2>⚙️ Moda göre</h2>
+     ${modeHTML}`;
 }
 
 // "Ev sahibi/Deplasman kazanır" yerine takım adı.
@@ -220,8 +330,9 @@ async function main() {
      <div class="section active" id="sec-coupons"><h2>🎫 Günün Kuponları (Futbol)</h2>${coupons}</div>
      <div class="section" id="sec-football"><h2>⚽ Futbol Bülteni</h2><div class="tabs">${tabs}</div><div id="day"></div></div>
      <div class="section" id="sec-basketball"><h2>🏀 Basketbol Bülteni</h2><div class="tabs" id="bballTabs">${bballTabs}</div><div id="bballDay"></div></div>
-     <div class="section" id="sec-history"><h2>📈 Son ${s.window_days||30} Gün İsabet</h2>${statsHTML}
-       <h2>📜 Kupon Geçmişi</h2>${historyItems}</div>`;
+     <div class="section" id="sec-history"><h2>📈 Son ${s.window_days||30} Gün — İsabet & Analiz</h2>${statsHTML}
+       <h2>📜 Kupon Geçmişi</h2>
+       <p class="note">✅ tutan · ❌ tutmayan tahminler, gerçek skorlarıyla.</p>${historyItems}</div>`;
 
   // Üst sekme geçişi: sadece seçilen bölümü göster.
   document.querySelectorAll(".mainTabs button").forEach(btn =>

@@ -133,3 +133,44 @@ def test_compute_stats_empty():
     stats = compute_stats([])
     assert stats["overall"]["pick_total"] == 0
     assert stats["overall"]["pick_rate"] is None
+
+
+# --- analiz: pazar bazlı + güven aralığı (kalibrasyon) ---
+
+def _apick(label, prob, hit):
+    return {"best_pick": {"label": label, "probability": prob}, "hit": hit}
+
+
+def _settled_with_picks(mode, picks):
+    return {"mode": mode, "settled_at": "2026-07-07T00:00:00Z", "picks": picks}
+
+
+def test_compute_stats_by_market_groups_by_label():
+    coupons = [_settled_with_picks("safe", [
+        _apick("2.5 Alt", 0.7, True),
+        _apick("2.5 Alt", 0.6, False),
+        _apick("KG Var", 0.65, True),
+    ])]
+    bm = compute_stats(coupons)["by_market"]
+    assert bm["2.5 Alt"] == {"hits": 1, "total": 2}
+    assert bm["KG Var"] == {"hits": 1, "total": 1}
+
+
+def test_compute_stats_calibration_buckets_by_probability():
+    coupons = [_settled_with_picks("safe", [
+        _apick("A", 0.55, True),    # 50-60
+        _apick("B", 0.58, False),   # 50-60
+        _apick("C", 0.72, True),    # 70-80
+        _apick("D", 0.85, False),   # 80+
+    ])]
+    cal = compute_stats(coupons)["calibration"]
+    assert cal["50-60%"] == {"hits": 1, "total": 2}
+    assert cal["70-80%"] == {"hits": 1, "total": 1}
+    assert cal["80%+"] == {"hits": 0, "total": 1}
+
+
+def test_compute_stats_analysis_absent_without_pick_detail():
+    # Detay (best_pick/probability) olmayan eski kayıtlar analizi çökertmemeli.
+    stats = compute_stats([_settled_coupon("safe", 2, 3)])
+    assert stats["by_market"] == {}
+    assert all(v["total"] == 0 for v in stats["calibration"].values())

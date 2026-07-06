@@ -100,15 +100,38 @@ def _finalize(bucket: dict) -> dict:
     return bucket
 
 
+# Kalibrasyon kovaları: modelin dediği güven aralığı → gerçek isabet.
+# Backtest'te modelin en güvenilir olduğu aralığın (%70-80) ölçüldüğü yer.
+_CALIBRATION_BUCKETS = ("50-60%", "60-70%", "70-80%", "80%+")
+
+
+def _confidence_bucket(prob: float) -> str:
+    if prob >= 0.8:
+        return "80%+"
+    if prob >= 0.7:
+        return "70-80%"
+    if prob >= 0.6:
+        return "60-70%"
+    return "50-60%"
+
+
 def compute_stats(coupons: list) -> dict:
-    """Hit statistics over settled coupons: overall + per mode.
+    """Hit statistics over settled coupons: overall + per mode + analysis.
 
     Pick-level: each prediction counts. Coupon-level: a coupon 'wins' only if
     every one of its picks hit (iddaa logic). Unsettled coupons are ignored.
     Caller is responsible for date-windowing the input (e.g. last 30 days).
+
+    Analysis adds two breakdowns for the site's "why did it miss?" panel:
+    - by_market: hit rate per selection label (e.g. "2.5 Alt", "KG Var").
+    - calibration: hit rate per model-confidence band. Predictions that lack
+      best_pick/probability detail (older records) are skipped in analysis but
+      still counted in the overall/mode totals.
     """
     overall = _empty_bucket()
     by_mode: dict = {}
+    by_market: dict = {}
+    calibration = {b: {"hits": 0, "total": 0} for b in _CALIBRATION_BUCKETS}
 
     for c in coupons:
         # DB kayıtları 'settled_at' (str), statik site 'settled' (bool) kullanır.
@@ -127,9 +150,24 @@ def compute_stats(coupons: list) -> dict:
             target["coupon_wins"] += 1 if won else 0
             target["coupon_total"] += 1
 
+        for p in picks:
+            bp = p.get("best_pick") or {}
+            label, prob = bp.get("label"), bp.get("probability")
+            if label is None or prob is None:
+                continue  # detay yok — analize giremez ama toplama girmişti
+            hit = bool(p.get("hit"))
+            mk = by_market.setdefault(label, {"hits": 0, "total": 0})
+            mk["total"] += 1
+            mk["hits"] += 1 if hit else 0
+            cal = calibration[_confidence_bucket(prob)]
+            cal["total"] += 1
+            cal["hits"] += 1 if hit else 0
+
     return {
         "overall": _finalize(overall),
         "by_mode": {m: _finalize(b) for m, b in by_mode.items()},
+        "by_market": by_market,
+        "calibration": calibration,
     }
 
 
