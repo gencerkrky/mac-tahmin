@@ -2,9 +2,10 @@ name: Günlük Kupon
 
 on:
   schedule:
-    # 06:37 UTC = 09:37 TR. Tam saat başı (0. dakika) GitHub'da en yoğun
-    # slot; scheduled iş orada sık ertelenir/atlanır. Kaydırınca daha güvenilir.
-    - cron: "37 6 * * *"
+    # 05:07 UTC ≈ 08:07 TR. Tam saat başı (0. dakika) GitHub'da en yoğun
+    # slot; scheduled iş orada sık ertelenir/atlanır. :07'ye kaydırınca
+    # daha güvenilir — site sabah ~08:10-08:40 arası güncellenir.
+    - cron: "7 5 * * *"
   workflow_dispatch:        # elle de tetiklenebilir
 
 permissions:

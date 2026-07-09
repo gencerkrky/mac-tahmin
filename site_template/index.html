@@ -34,6 +34,25 @@
   .spin { color:var(--muted); }
   .scoreList { margin-top:.4rem; font-size:.85rem; }
   .scoreList summary { cursor:pointer; color:var(--accent); }
+  /* "Öne çıkan" tek tahmin bloğu */
+  .headline { margin-top:.5rem; border-top:1px dashed var(--line); padding-top:.5rem; }
+  .headline .lbl { color:var(--accent); font-size:.72rem; font-weight:700;
+                   text-transform:uppercase; letter-spacing:.05em; }
+  .headline .pick { font-size:1.05rem; font-weight:800; margin-top:.1rem;
+                    display:flex; flex-wrap:wrap; align-items:baseline; gap:.4rem; }
+  .headline .pick .odds { font-size:.9rem; }
+  .headline .score { color:var(--muted); font-size:.82rem; margin-top:.1rem; }
+  /* Katlanabilir detaylı olasılıklar */
+  .more { margin-top:.5rem; font-size:.88rem; }
+  .more > summary { cursor:pointer; color:var(--accent); font-weight:600;
+                    list-style:none; padding:.15rem 0; }
+  .more > summary::before { content:"▸ "; }
+  .more[open] > summary::before { content:"▾ "; }
+  .more .body { display:grid; gap:.22rem; margin-top:.3rem; }
+  .hint { color:var(--muted); font-size:.76rem; line-height:1.45;
+          background:#0f172a; border:1px solid var(--line); border-radius:6px;
+          padding:.4rem .55rem; margin:.1rem 0 .35rem; }
+  .hint b { color:var(--text); }
   .scoreGrid { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem; }
   .scoreChip { background:#0f172a; border:1px solid var(--line); border-radius:6px;
                padding:.2rem .45rem; font-size:.82rem; }
@@ -218,7 +237,19 @@ function pickLabel(bp, f) {
   return bp.label;
 }
 
+// Öne çıkan tek tahmin: en güvenli bahis (best_pick) + en olası skor.
+function headlineHTML(p, best, f) {
+  if (!best) return "";
+  const odds = best.fair_odds != null ? best.fair_odds : (1 / best.probability).toFixed(2);
+  const sc = p.most_likely_score;
+  const score = sc ? `<div class="score">Tahmini skor: <b>${sc.home}-${sc.away}</b> (${pct(sc.probability)})</div>` : "";
+  return `<div class="headline"><div class="lbl">⭐ Öne çıkan</div>
+    <div class="pick">${pickLabel(best, f)} · ${pct(best.probability)}
+      <span class="odds ${odds>=2?"hot":""}">@${odds}</span></div>${score}</div>`;
+}
+
 function predHTML(p, best, f) {
+  // Temel satırlar (varsayılan açık): maç sonucu, 2.5 alt/üst, KG.
   const rows = [
     ["match_result","home",`${f.home.name} kazanır`,p.match_result.home],
     ["match_result","draw","Beraberlik",p.match_result.draw],
@@ -234,39 +265,58 @@ function predHTML(p, best, f) {
       <span>${pct(prob)} <span class="odds ${odds>=2?"hot":""}">@${odds.toFixed(2)}</span></span></div>`;
   }).join("");
   const sc = p.most_likely_score;
-  // Genişletilmiş marketler (yeni Poisson çıktısı varsa)
-  let extra = "";
-  if (p.over_under) {
-    const htftTop = Object.entries(p.htft).sort((a,b)=>b[1]-a[1]).slice(0,3)
-      .map(([k,v]) => `${k} (${pct(v)})`).join(" · ");
-    const scores = p.scorelines.slice(0,12).map(s =>
-      `<span class="scoreChip">${s.home}-${s.away} <span class="odds">@${(1/s.probability).toFixed(1)}</span></span>`).join("");
-    extra = `
-      <div class="row"><span>1.5 Üst / Alt</span><span>${pct(p.over_under["1.5"].over)} / ${pct(p.over_under["1.5"].under)}</span></div>
-      <div class="row"><span>3.5 Üst / Alt</span><span>${pct(p.over_under["3.5"].over)} / ${pct(p.over_under["3.5"].under)}</span></div>
-      <div class="row"><span>Çifte Şans (1X/12/X2)</span><span>${pct(p.double_chance["1X"])} / ${pct(p.double_chance["12"])} / ${pct(p.double_chance["X2"])}</span></div>
-      <div class="row"><span>Toplam Gol Tek / Çift</span><span>${pct(p.odd_even.odd)} / ${pct(p.odd_even.even)}</span></div>
-      <div class="row"><span>İY/MS (en olası 3)</span><span>${htftTop}</span></div>`;
-    extra += `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>
-      <details class="scoreList"><summary>📋 Tüm skorlar (oranlarıyla)</summary><div class="scoreGrid">${scores}</div></details>`;
-  } else {
-    extra = `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>`;
-  }
-  return rows + extra;
+  const scoreRow = `<div class="row"><span>En olası skor</span><span>${sc.home}-${sc.away} (${pct(sc.probability)})</span></div>`;
+
+  // Genişletilmiş marketler yoksa: sadece temel satırlar + en olası skor.
+  if (!p.over_under) return headlineHTML(p, best, f) + rows + scoreRow;
+
+  // Gelişmiş satırlar: az anlaşılan marketler açıklamalarıyla katlı bölümde.
+  const htftTop = Object.entries(p.htft).sort((a,b)=>b[1]-a[1]).slice(0,3)
+    .map(([k,v]) => `${k} (${pct(v)})`).join(" · ");
+  const scores = p.scorelines.slice(0,12).map(s =>
+    `<span class="scoreChip">${s.home}-${s.away} <span class="odds">@${(1/s.probability).toFixed(1)}</span></span>`).join("");
+  const advanced = `
+    <div class="hint">
+      <b>Çifte Şans (1X/12/X2):</b> iki sonuçtan biri tutsa yeter —
+      1X: ev kazanır <i>veya</i> berabere, 12: berabere olmaz,
+      X2: deplasman kazanır <i>veya</i> berabere.<br>
+      <b>İY/MS:</b> ilk yarı / maç sonu yönü (2/2 = ev önde başlar, ev kazanır).<br>
+      <b>Toplam Gol Tek/Çift:</b> maçtaki toplam gol sayısı tek mi çift mi.
+    </div>
+    <div class="row"><span>1.5 Üst / Alt</span><span>${pct(p.over_under["1.5"].over)} / ${pct(p.over_under["1.5"].under)}</span></div>
+    <div class="row"><span>3.5 Üst / Alt</span><span>${pct(p.over_under["3.5"].over)} / ${pct(p.over_under["3.5"].under)}</span></div>
+    <div class="row"><span>Çifte Şans (1X/12/X2)</span><span>${pct(p.double_chance["1X"])} / ${pct(p.double_chance["12"])} / ${pct(p.double_chance["X2"])}</span></div>
+    <div class="row"><span>Toplam Gol Tek / Çift</span><span>${pct(p.odd_even.odd)} / ${pct(p.odd_even.even)}</span></div>
+    <div class="row"><span>İY/MS (en olası 3)</span><span>${htftTop}</span></div>
+    <details class="scoreList"><summary>📋 Tüm skorlar (oranlarıyla)</summary><div class="scoreGrid">${scores}</div></details>`;
+
+  return headlineHTML(p, best, f) + rows + scoreRow +
+    `<details class="more"><summary>Detaylı olasılıklar</summary><div class="body">${advanced}</div></details>`;
 }
 
 function basketballPredHTML(p, f) {
-  const mr = p.match_result, tl = p.total_line;
+  const mr = p.match_result, tl = p.total_line, bp = p.best_pick;
+  // Öne çıkan tek tahmin: en güvenli bahis + beklenen skor.
+  // Galibiyet bahsinde ham "Ev/Deplasman" yerine takım adını göster.
+  const bpLabel = bp && bp.selection === "home" ? `${f.home.name} kazanır`
+    : bp && bp.selection === "away" ? `${f.away.name} kazanır`
+    : bp ? bp.label : "";
+  const headline = bp
+    ? `<div class="headline"><div class="lbl">⭐ Öne çıkan</div>
+        <div class="pick">${bpLabel} · ${pct(bp.probability)}
+          <span class="odds">@${(1/bp.probability).toFixed(2)}</span></div>
+        <div class="score">Beklenen skor: <b>${p.expected_points.home} - ${p.expected_points.away}</b></div></div>`
+    : "";
   const rows = [
     [`${f.home.name} kazanır`, mr.home, "home"],
     [`${f.away.name} kazanır`, mr.away, "away"],
     [`${p.line} Üst`, tl.over], [`${p.line} Alt`, tl.under],
   ].map(([label, prob, side]) => {
-    const isBest = side ? p.best_pick.selection === side : p.best_pick.label === label;
+    const isBest = side ? bp.selection === side : bp.label === label;
     return `<div class="row ${isBest?"star":""}"><span>${isBest?"⭐ ":""}${label}</span>
       <span>${pct(prob)} <span class="odds">@${(1/prob).toFixed(2)}</span></span></div>`;
   }).join("");
-  return rows +
+  return headline + rows +
     `<div class="row"><span>Beklenen skor</span><span>${p.expected_points.home} - ${p.expected_points.away}</span></div>
      <div class="row"><span>Fark (handikap)</span><span>${p.spread > 0 ? f.home.name : f.away.name} +${Math.abs(p.spread)}</span></div>`;
 }
