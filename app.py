@@ -34,6 +34,11 @@ DEFAULT_COUPON_SIZE = 5
 # user's iddaa habit of only playing 2.00+ selections.
 COUPON_MODES = {"safe": 0.0, "balanced": 1.5, "value": 2.0}
 
+# Confidence floor per mode: picks below it never enter the coupon, even if
+# that leaves fewer than DEFAULT_COUPON_SIZE legs. Fewer-but-stronger legs
+# raise the chance the whole coupon lands ("tam tutan kupon").
+COUPON_MIN_PROBABILITY = {"safe": 0.60, "balanced": 0.50, "value": 0.40}
+
 # Only not-yet-started fixtures make sense for predictions.
 UPCOMING_STATUSES = {"NS", "TBD"}
 
@@ -96,9 +101,17 @@ def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
     }
 
 
-def pick_top_predictions(items: list, size: int) -> dict:
-    """Pure coupon builder: top-N items by best-pick probability."""
-    ranked = sorted(items, key=lambda i: i["best_pick"]["probability"], reverse=True)
+def pick_top_predictions(items: list, size: int,
+                         min_probability: float = 0.0) -> dict:
+    """Pure coupon builder: top-N items by best-pick probability.
+
+    min_probability drops low-confidence picks entirely — a shorter coupon
+    beats padding it with weak legs that sink the whole ticket.
+    """
+    eligible = [i for i in items
+                if i["best_pick"]["probability"] >= min_probability]
+    ranked = sorted(eligible, key=lambda i: i["best_pick"]["probability"],
+                    reverse=True)
     picks = ranked[:size]
     if not picks:
         return {"picks": [], "total_odds": 0, "combined_probability": 0}
@@ -239,7 +252,7 @@ def coupon():
     except ApiError as exc:
         return jsonify({"error": str(exc)}), 502
 
-    result = pick_top_predictions(analysed, size)
+    result = pick_top_predictions(analysed, size, COUPON_MIN_PROBABILITY[mode])
     result["analysed_count"] = len(analysed)
     result["skipped_count"] = max(0, len(upcoming) - len(candidates))
 

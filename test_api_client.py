@@ -103,6 +103,35 @@ def test_get_team_form_averages(monkeypatch):
     assert form["log"][0]["opponent_id"]              # rakip id dolu
 
 
+def test_get_team_form_backfills_previous_seasons(monkeypatch):
+    # Bu sezon hiç bitmiş maç yok (eleme turu) → önceki sezondan form çekilmeli.
+    seasons_asked = []
+    def fake_get(url, params=None, **kwargs):
+        if params and "season" in params:
+            seasons_asked.append(params["season"])
+            if params["season"] == 2025:
+                return FakeResponse(_schedule_payload())
+            return FakeResponse({"events": []})       # 2024'te de veri yok
+        return FakeResponse({"season": {"year": 2026}, "events": []})
+    monkeypatch.setattr(api_client.requests, "get", fake_get)
+    form = get_team_form("10", "uefa.europa.conf_qual")
+    assert seasons_asked == [2025, 2024]              # geriye doğru denendi
+    assert form["matches"] == 2                       # önceki sezonun 2 maçı
+    assert form["scored_avg"] == pytest.approx(2.0)
+
+
+def test_get_team_form_fallback_error_keeps_current_data(monkeypatch):
+    # Önceki sezon isteği patlarsa eldeki (boş) veriyle lig ortalamasına düşer.
+    def fake_get(url, params=None, **kwargs):
+        if params and "season" in params:
+            raise api_client.requests.exceptions.ConnectionError("down")
+        return FakeResponse({"season": {"year": 2026}, "events": []})
+    monkeypatch.setattr(api_client.requests, "get", fake_get)
+    form = get_team_form("10", "uefa.europa.conf_qual")
+    assert form["matches"] == 0
+    assert form["scored_avg"] == form["conceded_avg"] > 0
+
+
 def test_get_team_form_no_data_falls_back(monkeypatch):
     monkeypatch.setattr(api_client.requests, "get",
                         lambda *a, **k: FakeResponse({"events": []}))

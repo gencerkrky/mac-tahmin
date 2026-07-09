@@ -29,6 +29,12 @@ BASKETBALL_FORM_GAMES = 10
 # before so home/away splits still have enough games each.
 FORM_MATCH_COUNT = 30
 
+# Qualifier/cup teams often have no finished matches yet in the current
+# competition season (e.g. UEFA qualifying in July). Below this many matches
+# the form log is backfilled from previous seasons of the same competition.
+FORM_MIN_MATCHES = 5
+FORM_FALLBACK_SEASONS = 2
+
 # Fallback profile when a team has no finished matches yet: assume a
 # league-average side (mirrors poisson.LEAGUE_AVG_GOALS).
 FALLBACK_GOAL_AVG = 1.35
@@ -323,6 +329,17 @@ def get_h2h(league_slug: str, event_id: str, home_team_id: str) -> dict:
     return h2h
 
 
+def _finished_competitions(payload: dict) -> list:
+    """(date, competition) pairs of the completed events in a schedule payload."""
+    finished = []
+    for event in payload.get("events", []):
+        competition = event["competitions"][0]
+        if not competition["status"]["type"]["completed"]:
+            continue
+        finished.append((event["date"], competition))
+    return finished
+
+
 def get_team_form(team_id: str, league_slug: str) -> dict:
     """Recent match log for a team, split by venue, most-recent first.
 
@@ -336,13 +353,21 @@ def get_team_form(team_id: str, league_slug: str) -> dict:
         return _cache[cache_key]
 
     payload = _get(f"{API_BASE_URL}/{league_slug}/teams/{team_id}/schedule")
+    finished = _finished_competitions(payload)
 
-    finished = []
-    for event in payload.get("events", []):
-        competition = event["competitions"][0]
-        if not competition["status"]["type"]["completed"]:
-            continue
-        finished.append((event["date"], competition))
+    # Sparse current season (qualifier first round etc.): best-effort backfill
+    # from previous seasons so the model still gets a usable form log.
+    season_year = (payload.get("season") or {}).get("year")
+    for back in range(1, FORM_FALLBACK_SEASONS + 1):
+        if len(finished) >= FORM_MIN_MATCHES or not season_year:
+            break
+        try:
+            prev = _get(f"{API_BASE_URL}/{league_slug}/teams/{team_id}/schedule",
+                        {"season": season_year - back})
+        except ApiError:
+            break  # fallback data is optional; keep whatever we already have
+        finished.extend(_finished_competitions(prev))
+
     finished.sort(key=lambda pair: pair[0], reverse=True)
     finished = finished[:FORM_MATCH_COUNT]
 

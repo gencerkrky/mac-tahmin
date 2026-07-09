@@ -18,8 +18,9 @@ from pathlib import Path
 
 from api_client import (get_basketball_fixtures, get_basketball_form,
                         get_fixtures)
-from app import (COUPON_MODES, DEFAULT_COUPON_SIZE, MAX_COUPON_CANDIDATES,
-                 UPCOMING_STATUSES, pick_top_predictions, predict_fixture)
+from app import (COUPON_MIN_PROBABILITY, COUPON_MODES, DEFAULT_COUPON_SIZE,
+                 MAX_COUPON_CANDIDATES, UPCOMING_STATUSES,
+                 pick_top_predictions, predict_fixture)
 from basketball import predict_basketball
 from store import compute_stats, pick_hit
 
@@ -94,7 +95,8 @@ def generate_daily_coupons(today: str, history: list) -> list:
     for mode, min_odds in COUPON_MODES.items():
         analysed = [item for fx in candidates
                     if (item := predict_fixture(fx, min_odds=min_odds)) is not None]
-        result = pick_top_predictions(analysed, DEFAULT_COUPON_SIZE)
+        result = pick_top_predictions(analysed, DEFAULT_COUPON_SIZE,
+                                      COUPON_MIN_PROBABILITY[mode])
         coupon = {
             "date": today,
             "mode": mode,

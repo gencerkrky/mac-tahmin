@@ -45,6 +45,14 @@ def test_pick_top_predictions_metrics():
     assert coupon["combined_probability"] == pytest.approx(0.25)
 
 
+def test_pick_top_predictions_confidence_floor():
+    # Eşiğin altındaki zayıf tahminler kuponu doldurmak için bile kullanılmaz.
+    items = [_item(0.72, 1.39), _item(0.65, 1.54), _item(0.45, 2.22)]
+    coupon = pick_top_predictions(items, size=3, min_probability=0.60)
+    probs = [i["best_pick"]["probability"] for i in coupon["picks"]]
+    assert probs == [0.72, 0.65]                     # 0.45'lik pick elendi
+
+
 def test_pick_top_predictions_empty():
     coupon = pick_top_predictions([], size=5)
     assert coupon["picks"] == []
