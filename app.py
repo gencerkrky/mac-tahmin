@@ -30,20 +30,41 @@ MAX_COUPON_CANDIDATES = 20
 DEFAULT_COUPON_SIZE = 5
 
 # Coupon modes: minimum fair odds a pick must have to enter the coupon.
-# "safe" takes the most probable pick regardless of odds; "value" mimics the
-# user's iddaa habit of only playing 2.00+ selections.
+# These are RISK dials, not value filters. The threshold is compared against
+# the model's own fair odds, so raising it cannot find a mispriced bet — it
+# just forces a less likely selection. "value" is therefore the
+# high-payout/low-hit mode, named for the user's 2.00+ iddaa habit rather than
+# for any detected edge. ESPN's summary payload does carry real bookmaker
+# moneylines (~98% coverage), so an edge-based mode is possible later; it
+# would need pre-match odds, which that endpoint cannot be time-sliced to give.
 COUPON_MODES = {"safe": 0.0, "balanced": 1.5, "value": 2.0}
 
-# Confidence floor per mode: picks below it never enter the coupon, even if
-# that leaves fewer than DEFAULT_COUPON_SIZE legs. Fewer-but-stronger legs
-# raise the chance the whole coupon lands ("tam tutan kupon").
-COUPON_MIN_PROBABILITY = {"safe": 0.60, "balanced": 0.50, "value": 0.40}
+# Legs per mode. Every extra leg multiplies the miss chance, so full-coupon
+# hit rate is driven far more by leg count than by per-pick quality. Measured
+# per-pick accuracy is ~56% (evaluate.py over the warehouse), which makes a
+# 3-leg coupon land about 18% of the time and a single pick 56%. Since the
+# picks are not independent bets the user must combine, one strong leg is both
+# the honest presentation and the one that actually lands.
+COUPON_SIZES = {"safe": 1, "balanced": 1, "value": 1}
+
+# Confidence floor per mode: below this, no coupon is produced at all. With
+# one leg per coupon this is the only thing standing between the user and a
+# coin-flip pick on a quiet day — an empty coupon is a better answer than a
+# weak one. Floors sit under each mode's odds band (a 2.00+ pick cannot clear
+# 0.65 by definition, since fair odds ≥ 2.00 means probability ≤ 0.50).
+COUPON_MIN_PROBABILITY = {"safe": 0.65, "balanced": 0.55, "value": 0.45}
+
+# Reliability ratios below/above 1 rescale a pick's probability before it
+# competes for a coupon slot; cap keeps a hot streak from inflating anything
+# past near-certainty.
+MAX_ADJUSTED_PROBABILITY = 0.97
 
 # Only not-yet-started fixtures make sense for predictions.
 UPCOMING_STATUSES = {"NS", "TBD"}
 
 # Default league average goals when opponent-strength baseline is unavailable.
-DEFAULT_LEAGUE_AVG = 1.35
+# Sourced from the model so the prior can't drift apart across modules.
+DEFAULT_LEAGUE_AVG = poisson.LEAGUE_AVG_GOALS
 
 # AI analyses are paid API calls; cache per fixture for the process lifetime.
 _ai_cache: dict = {}
@@ -52,13 +73,18 @@ _ai_cache: dict = {}
 venue_weighted = poisson.venue_weighted
 
 
-def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
+def predict_fixture(fx: dict, min_odds: float = 0.0,
+                    reliability: dict | None = None) -> dict | None:
     """Full prediction for one fixture using the enhanced form model.
 
     Fetches both teams' form + H2H, then delegates the numeric model to
     poisson.predict_from_forms (same code the backtest uses). A per-fixture
     network failure returns None so one bad match can't sink a whole coupon.
     Returns None when no selection clears min_odds (mode-filtered coupons).
+
+    reliability (store.market_reliability) steers which market wins *within*
+    this fixture, so a market the model has been overrating is not picked in
+    the first place rather than only being demoted later during ranking.
     """
     slug = fx["league_slug"]
     try:
@@ -90,7 +116,7 @@ def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
 
     if prediction is None:
         return None
-    pick = best_pick(prediction, min_odds=min_odds)
+    pick = best_pick(prediction, min_odds=min_odds, market_edge=reliability)
     if pick is None:
         return None
     return {
@@ -102,22 +128,35 @@ def predict_fixture(fx: dict, min_odds: float = 0.0) -> dict | None:
 
 
 def pick_top_predictions(items: list, size: int,
-                         min_probability: float = 0.0) -> dict:
+                         min_probability: float = 0.0,
+                         reliability: dict | None = None) -> dict:
     """Pure coupon builder: top-N items by best-pick probability.
 
     min_probability drops low-confidence picks entirely — a shorter coupon
     beats padding it with weak legs that sink the whole ticket.
+
+    reliability maps (market, selection) → ratio of realized vs claimed hit
+    rate (store.market_reliability). The claimed probability is rescaled by it
+    before ranking and thresholding, so markets the model has historically
+    overrated (e.g. home wins) must clear a higher bar to enter the coupon.
     """
-    eligible = [i for i in items
-                if i["best_pick"]["probability"] >= min_probability]
-    ranked = sorted(eligible, key=lambda i: i["best_pick"]["probability"],
-                    reverse=True)
+    reliability = reliability or {}
+
+    def adjusted(item: dict) -> float:
+        bp = item["best_pick"]
+        ratio = reliability.get((bp.get("market"), bp.get("selection")), 1.0)
+        return min(MAX_ADJUSTED_PROBABILITY, bp["probability"] * ratio)
+
+    eligible = [i for i in items if adjusted(i) >= min_probability]
+    ranked = sorted(eligible, key=adjusted, reverse=True)
     picks = ranked[:size]
     if not picks:
         return {"picks": [], "total_odds": 0, "combined_probability": 0}
 
+    for p in picks:
+        p["best_pick"]["adjusted_probability"] = round(adjusted(p), 4)
     total_odds = math.prod(p["best_pick"]["fair_odds"] for p in picks)
-    combined = math.prod(p["best_pick"]["probability"] for p in picks)
+    combined = math.prod(adjusted(p) for p in picks)
     # A zero-probability pick yields infinite odds → invalid JSON (Infinity).
     # Guard so the coupon endpoint always returns finite, serializable numbers.
     if not math.isfinite(total_odds):
@@ -234,8 +273,10 @@ def analyze():
 @app.get("/api/coupon")
 def coupon():
     date_str = _parse_date(request.args.get("date", ""))
-    size = request.args.get("size", default=DEFAULT_COUPON_SIZE, type=int)
     mode = request.args.get("mode", "safe")
+    size = request.args.get("size",
+                            default=COUPON_SIZES.get(mode, DEFAULT_COUPON_SIZE),
+                            type=int)
     if not date_str:
         return jsonify({"error": "Geçersiz tarih. Beklenen format: YYYY-MM-DD"}), 400
     if not 1 <= size <= MAX_COUPON_CANDIDATES:
@@ -244,15 +285,25 @@ def coupon():
         return jsonify({"error": f"Geçersiz mod. Seçenekler: {', '.join(COUPON_MODES)}"}), 400
 
     min_odds = COUPON_MODES[mode]
+    # Computed before prediction so it can steer market choice inside each
+    # fixture, not just the ranking between fixtures.
+    try:
+        reliability = store.market_reliability(store.list_coupons(limit=200))
+    except Exception as exc:
+        app.logger.error("Güvenilirlik hesaplanamadı: %s", exc)
+        reliability = {}
+
     try:
         upcoming = [f for f in get_fixtures(date_str) if f["status"] in UPCOMING_STATUSES]
         candidates = upcoming[:MAX_COUPON_CANDIDATES]
         analysed = [item for fx in candidates
-                    if (item := predict_fixture(fx, min_odds=min_odds)) is not None]
+                    if (item := predict_fixture(fx, min_odds=min_odds,
+                                                reliability=reliability)) is not None]
     except ApiError as exc:
         return jsonify({"error": str(exc)}), 502
 
-    result = pick_top_predictions(analysed, size, COUPON_MIN_PROBABILITY[mode])
+    result = pick_top_predictions(analysed, size, COUPON_MIN_PROBABILITY[mode],
+                                  reliability=reliability)
     result["analysed_count"] = len(analysed)
     result["skipped_count"] = max(0, len(upcoming) - len(candidates))
 

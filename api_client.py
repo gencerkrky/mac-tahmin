@@ -35,8 +35,14 @@ FORM_MATCH_COUNT = 30
 FORM_MIN_MATCHES = 5
 FORM_FALLBACK_SEASONS = 2
 
+# Same-venue H2H meetings needed before we drop the reverse-fixture meetings.
+# Below this, one home meeting is noisier than the full blend.
+H2H_MIN_SAME_VENUE = 2
+
 # Fallback profile when a team has no finished matches yet: assume a
-# league-average side (mirrors poisson.LEAGUE_AVG_GOALS).
+# league-average side. Deliberately duplicated rather than imported from
+# poisson — this module stays model-agnostic — but the two must stay in sync;
+# test_api_client asserts they match.
 FALLBACK_GOAL_AVG = 1.35
 
 # Leagues shown in the bulletin and analysed by the coupon (ESPN slugs).
@@ -297,8 +303,12 @@ def get_h2h(league_slug: str, event_id: str, home_team_id: str) -> dict:
     group_team_id = str(group.get("team", {}).get("id", ""))
     group_is_home_side = group_team_id == str(home_team_id)
 
-    team_goals = opp_goals = 0.0
-    meetings = 0
+    # Meetings are split by venue: a meeting played at the upcoming fixture's
+    # host ground says something about this fixture; one played at the other
+    # ground carries the opposite home advantage. Mixing them (as an
+    # all-meetings average does) blurs exactly the signal H2H is meant to add.
+    same_venue = []   # (goals by upcoming home side, goals by upcoming away side)
+    all_meetings = []
     for game in group.get("events", []):
         try:
             hg = float(game["homeTeamScore"])
@@ -306,24 +316,35 @@ def get_h2h(league_slug: str, event_id: str, home_team_id: str) -> dict:
         except (KeyError, TypeError, ValueError):
             continue
         # 'vs' → group team hosted this meeting, '@' → played away.
-        if game.get("atVs") == "vs":
-            team_goals += hg
-            opp_goals += ag
+        group_hosted = game.get("atVs") == "vs"
+        if group_hosted:
+            group_goals, other_goals = hg, ag
         else:
-            team_goals += ag
-            opp_goals += hg
-        meetings += 1
+            group_goals, other_goals = ag, hg
 
-    if meetings == 0:
+        # Re-express from the upcoming fixture's home side's perspective.
+        if group_is_home_side:
+            pair = (group_goals, other_goals)
+            hosted_by_upcoming_home = group_hosted
+        else:
+            pair = (other_goals, group_goals)
+            hosted_by_upcoming_home = not group_hosted
+
+        all_meetings.append(pair)
+        if hosted_by_upcoming_home:
+            same_venue.append(pair)
+
+    # Prefer same-venue meetings; fall back to all meetings when there are
+    # too few, since a single same-venue game is noisier than the blend.
+    used = same_venue if len(same_venue) >= H2H_MIN_SAME_VENUE else all_meetings
+    if not used:
         _cache[cache_key] = empty
         return empty
 
-    team_avg = round(team_goals / meetings, 3)
-    opp_avg = round(opp_goals / meetings, 3)
     h2h = {
-        "home_scored_avg": team_avg if group_is_home_side else opp_avg,
-        "away_scored_avg": opp_avg if group_is_home_side else team_avg,
-        "meetings": meetings,
+        "home_scored_avg": round(sum(p[0] for p in used) / len(used), 3),
+        "away_scored_avg": round(sum(p[1] for p in used) / len(used), 3),
+        "meetings": len(used),
     }
     _cache[cache_key] = h2h
     return h2h

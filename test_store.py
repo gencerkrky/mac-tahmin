@@ -174,3 +174,72 @@ def test_compute_stats_analysis_absent_without_pick_detail():
     stats = compute_stats([_settled_coupon("safe", 2, 3)])
     assert stats["by_market"] == {}
     assert all(v["total"] == 0 for v in stats["calibration"].values())
+
+
+# --- market güvenilirliği (kupon kurucunun ceza/ödül katsayıları) ---
+
+from store import RELIABILITY_PRIOR_WEIGHT, market_reliability
+
+
+def _rpick(market, selection, prob, hit):
+    return {"best_pick": {"market": market, "selection": selection,
+                          "probability": prob}, "hit": hit}
+
+
+def test_market_reliability_penalizes_overconfident_market():
+    # 20 tahmin, iddia %60, gerçekleşen %40 → ham oran 0.4/0.6 ≈ 0.667.
+    # 20/(20+12) ağırlıkla 1.0'a doğru çekilir → ~0.79.
+    picks = [_rpick("btts", "no", 0.60, i < 8) for i in range(20)]
+    ratios = market_reliability([_settled_with_picks("safe", picks)])
+    weight = 20 / (20 + RELIABILITY_PRIOR_WEIGHT)
+    expected = weight * (0.40 / 0.60) + (1 - weight)
+    assert ratios[("btts", "no")] == pytest.approx(expected, abs=0.001)
+    assert ratios[("btts", "no")] < 1.0
+
+
+def test_market_reliability_clamp_floors_extreme_penalty():
+    # Çok büyük ve çok kötü örneklem: kırpma alt sınırı devreye girer.
+    picks = [_rpick("btts", "no", 0.70, False)] * 200
+    ratios = market_reliability([_settled_with_picks("safe", picks)])
+    assert ratios[("btts", "no")] == pytest.approx(0.75)
+
+
+def test_market_reliability_shrinks_small_samples_toward_neutral():
+    # Küçük örneklem: ham oran uçuk olsa bile düzeltme 1.0'a yakın kalmalı,
+    # ama sert eşikteki gibi tamamen yok sayılmamalı.
+    picks = [_rpick("btts", "no", 0.60, False)] * 3      # ham oran 0.0
+    ratio = market_reliability([_settled_with_picks("safe", picks)])[("btts", "no")]
+    assert ratio < 1.0                                    # ceza uygulanıyor
+    assert ratio > 0.75                                   # ama kırpma sınırına inmiyor
+
+
+def test_market_reliability_larger_sample_penalizes_harder():
+    # Aynı ham oran, daha çok maç → düzeltme 1.0'dan daha uzağa gider.
+    small = market_reliability([_settled_with_picks(
+        "safe", [_rpick("btts", "no", 0.60, False)] * 3)])[("btts", "no")]
+    large = market_reliability([_settled_with_picks(
+        "safe", [_rpick("btts", "no", 0.60, False)] * 40)])[("btts", "no")]
+    assert large < small
+
+
+def test_market_reliability_shrinkage_is_neutral_at_prior_weight():
+    # n == RELIABILITY_PRIOR_WEIGHT → ham oran ile 1.0 arasında tam ortada.
+    n = RELIABILITY_PRIOR_WEIGHT
+    picks = [_rpick("btts", "yes", 0.50, i < n // 2) for i in range(n)]
+    ratio = market_reliability([_settled_with_picks("safe", picks)])[("btts", "yes")]
+    raw = 0.5 / 0.50                                      # gerçekleşen / iddia = 1.0
+    assert ratio == pytest.approx(0.5 * raw + 0.5 * 1.0, abs=0.01)
+
+
+def test_market_reliability_ignores_unsettled_and_detail_free():
+    picks = [_rpick("btts", "yes", 0.6, True)] * 20
+    unsettled = {"mode": "safe", "settled_at": None, "picks": picks}
+    no_detail = _settled_with_picks("safe", [{"best_pick": {}, "hit": True}] * 20)
+    assert market_reliability([unsettled, no_detail]) == {}
+
+
+def test_market_reliability_caps_boost():
+    # Sürekli tutan market bile 1.05'ten fazla şişirilmez.
+    picks = [_rpick("over_under_25", "over", 0.55, True)] * 20
+    ratios = market_reliability([_settled_with_picks("safe", picks)])
+    assert ratios[("over_under_25", "over")] == pytest.approx(1.05)

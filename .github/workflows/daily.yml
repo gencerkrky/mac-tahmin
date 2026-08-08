@@ -30,8 +30,26 @@ jobs:
           curl -sf "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/history.json" \
             -o public/history.json || echo "İlk çalıştırma: geçmiş yok"
 
+      # Maç deposu Actions çalışma alanında yaşamaz (her koşuda sıfırlanır),
+      # bu yüzden Pages'te saklanır ve her sabah geri indirilir. İndirme
+      # başarısızsa depo boş başlar; ingest onu yeniden doldurur, koşu ölmez.
+      - name: Maç deposunu indir
+        run: |
+          curl -sf "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/warehouse.db" \
+            -o warehouse.db || echo "İlk çalıştırma: depo yok"
+
+      - name: Deponun dünkü ve bugünkü maçlarını tazele
+        run: python warehouse.py daily 7
+
+      - name: Eksik kutu skorlarını doldur (şut/isabetli şut)
+        run: python warehouse.py stats 400
+        continue-on-error: true      # zenginleştirme opsiyonel; kuponu bloklamaz
+
       - name: Siteyi üret
         run: python generate_site.py
+
+      - name: Depoyu yayına kopyala (bir sonraki koşu için)
+        run: cp warehouse.db public/warehouse.db
 
       - name: GitHub Pages'e yayınla
         uses: peaceiris/actions-gh-pages@v4

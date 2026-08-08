@@ -231,6 +231,91 @@ def test_double_chance_from_match_result():
     assert dc["X2"] == pytest.approx(mr["draw"] + mr["away"], abs=0.001)
 
 
+# --- Lig ortalaması gerçekten modele giriyor mu (eskiden sabit 1.35'ti) ---
+
+def test_league_avg_changes_expected_goals():
+    # Aynı takım ortalamaları, farklı lig baseline'ı → farklı xG.
+    low = predict(1.0, 1.0, 1.0, 1.0, league_avg=1.0)
+    high = predict(1.0, 1.0, 1.0, 1.0, league_avg=2.5)
+    assert low["expected_goals"]["home"] > high["expected_goals"]["home"]
+    # Çok gollü ligde 1.0 ortalama = zayıf takım → üst olasılığı düşer.
+    assert low["over_under_25"]["over"] > high["over_under_25"]["over"]
+
+
+def test_league_avg_zero_falls_back_to_constant():
+    assert predict(1.4, 1.2, 1.3, 1.1, league_avg=0.0) == \
+        predict(1.4, 1.2, 1.3, 1.1, league_avg=LEAGUE_AVG_GOALS)
+
+
+def test_shrink_uses_supplied_league_avg():
+    # 0 maç → tamamen prior'a düşer, prior artık parametreyle geliyor.
+    assert shrink_to_league_avg(5.0, matches=0, league_avg=2.4) == pytest.approx(2.4)
+
+
+def test_predict_from_forms_passes_league_avg_through():
+    home = _mlog([(1, 1, "home")] * 6)
+    away = _mlog([(1, 1, "away")] * 6)
+    low = predict_from_forms(home, away, 6, 6, league_avg=1.0)
+    high = predict_from_forms(home, away, 6, 6, league_avg=2.5)
+    assert low["expected_goals"]["home"] != high["expected_goals"]["home"]
+
+
+# --- Dixon-Coles düşük skor düzeltmesi ---
+
+from poisson import DIXON_COLES_RHO, _score_matrix
+
+
+def _draw_prob(matrix):
+    return sum(matrix[i][i] for i in range(len(matrix)))
+
+
+def test_dixon_coles_raises_draw_probability():
+    plain = _score_matrix(1.4, 1.2, rho=0.0)
+    corrected = _score_matrix(1.4, 1.2, rho=DIXON_COLES_RHO)
+    assert _draw_prob(corrected) > _draw_prob(plain)
+
+
+def test_dixon_coles_lifts_00_and_11_lowers_10():
+    plain = _score_matrix(1.4, 1.2, rho=0.0)
+    corrected = _score_matrix(1.4, 1.2, rho=DIXON_COLES_RHO)
+    assert corrected[0][0] > plain[0][0]
+    assert corrected[1][1] > plain[1][1]
+    assert corrected[1][0] < plain[1][0]
+
+
+def test_dixon_coles_matrix_stays_a_distribution():
+    for lam_h, lam_a in [(0.3, 0.2), (1.4, 1.2), (4.0, 3.5), (0.01, 0.01)]:
+        m = _score_matrix(lam_h, lam_a)
+        assert sum(p for row in m for p in row) == pytest.approx(1.0, abs=1e-9)
+        assert min(p for row in m for p in row) >= 0.0
+
+
+def test_dixon_coles_leaves_high_scores_untouched():
+    # 2+ gollü skorlarda düzeltme yok; oran korunmalı.
+    plain = _score_matrix(1.4, 1.2, rho=0.0)
+    corrected = _score_matrix(1.4, 1.2, rho=DIXON_COLES_RHO)
+    assert corrected[3][2] / plain[3][2] == pytest.approx(
+        corrected[4][3] / plain[4][3], abs=1e-9)
+
+
+# --- best_pick market kalibrasyonu ---
+
+def test_best_pick_market_edge_reorders_selection():
+    p = predict(1.5, 1.2, 1.3, 1.3)
+    base = best_pick(p)
+    # Seçilen marketi ağır cezalandır → başka bir market öne geçmeli.
+    penalised = best_pick(p, market_edge={(base["market"], base["selection"]): 0.5})
+    assert penalised["market"] != base["market"] or \
+        penalised["selection"] != base["selection"]
+
+
+def test_best_pick_reports_raw_probability_not_calibrated():
+    p = predict(2.5, 0.5, 0.7, 2.2)
+    pick = best_pick(p, market_edge={("match_result", "home"): 0.9})
+    # Dönen olasılık ham model değeri olmalı; kalibrasyon yalnız sıralama anahtarı.
+    assert pick["probability"] == p[pick["market"]][pick["selection"]]
+
+
 def test_htft_probabilities_sum_to_one():
     p = predict(1.8, 1.0, 1.2, 1.3)
     htft = p["htft"]

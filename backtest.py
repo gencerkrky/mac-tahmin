@@ -14,7 +14,7 @@ import sys
 from datetime import date, timedelta
 
 from api_client import ApiError, get_fixtures, get_team_form
-from poisson import best_pick, predict_from_forms
+from poisson import LEAGUE_AVG_GOALS, best_pick, predict_from_forms
 
 
 def _matches_before(team_id, league_slug, cutoff_iso):
@@ -29,6 +29,28 @@ def _conceded_before(team_id, league_slug, cutoff_iso):
     if not log:
         return None
     return sum(m["conceded"] for m in log) / len(log)
+
+
+def h2h_from_logs(home_log, away_id):
+    """Leak-free H2H built from the home side's own pre-cutoff match log.
+
+    The live path uses ESPN's summary endpoint, which cannot be time-sliced —
+    so a backtest that called it would see meetings played after the fixture.
+    Deriving H2H from the already-filtered form log keeps the backtest honest
+    while still exercising the H2H branch the live model uses.
+
+    Only meetings at this fixture's venue count, mirroring get_h2h's
+    same-venue preference. Returns None when there are no past meetings.
+    """
+    meetings = [m for m in home_log
+                if m["opponent_id"] == str(away_id) and m["venue"] == "home"]
+    if not meetings:
+        return None
+    return {
+        "home_scored_avg": round(sum(m["scored"] for m in meetings) / len(meetings), 3),
+        "away_scored_avg": round(sum(m["conceded"] for m in meetings) / len(meetings), 3),
+        "meetings": len(meetings),
+    }
 
 
 def actual_pick_hit(pick, hg, ag):
@@ -69,16 +91,18 @@ def backtest_fixture(fx):
         if c is not None:
             conceded_cache[tid] = c
     league_avg = (round(sum(conceded_cache.values()) / len(conceded_cache), 3)
-                  if conceded_cache else 1.35)
+                  if conceded_cache else LEAGUE_AVG_GOALS)
 
     def conceded_of(team_id):
         return conceded_cache.get(team_id, league_avg)
 
-    # H2H is intentionally omitted in backtest: get_h2h needs a live summary
-    # endpoint and can't be time-sliced, so we test the pure form model.
+    # H2H is rebuilt from the pre-cutoff logs rather than the live summary
+    # endpoint, so the backtest exercises the same H2H branch as production
+    # without leaking meetings played after this fixture.
     prediction = predict_from_forms(
         home_log, away_log, len(home_log), len(away_log),
-        h2h=None, league_avg=league_avg, conceded_of=conceded_of,
+        h2h=h2h_from_logs(home_log, fx["away"]["id"]),
+        league_avg=league_avg, conceded_of=conceded_of,
     )
     if prediction is None:
         return None

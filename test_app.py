@@ -53,6 +53,32 @@ def test_pick_top_predictions_confidence_floor():
     assert probs == [0.72, 0.65]                     # 0.45'lik pick elendi
 
 
+def _mk_item(prob, odds, market, selection):
+    return {"best_pick": {"probability": prob, "fair_odds": odds,
+                          "market": market, "selection": selection}}
+
+
+def test_pick_top_predictions_reliability_reranks():
+    # Model ev galibiyetine %70 diyor ama geçmişte abartmış (ratio 0.8):
+    # düzeltilmiş 0.56, alt/üst pick'i (0.65) öne geçmeli.
+    items = [_mk_item(0.70, 1.43, "match_result", "home"),
+             _mk_item(0.65, 1.54, "over_under_25", "under")]
+    rel = {("match_result", "home"): 0.8}
+    coupon = pick_top_predictions(items, size=2, reliability=rel)
+    markets = [i["best_pick"]["market"] for i in coupon["picks"]]
+    assert markets == ["over_under_25", "match_result"]
+    # combined düzeltilmiş olasılıklarla hesaplanır: 0.65 * 0.56
+    assert coupon["combined_probability"] == pytest.approx(0.364)
+
+
+def test_pick_top_predictions_reliability_enforces_floor():
+    # Düzeltilmiş olasılık eşiğin altına düşen pick kupona giremez.
+    items = [_mk_item(0.68, 1.47, "btts", "no")]
+    coupon = pick_top_predictions(items, size=1, min_probability=0.60,
+                                  reliability={("btts", "no"): 0.8})
+    assert coupon["picks"] == []
+
+
 def test_pick_top_predictions_empty():
     coupon = pick_top_predictions([], size=5)
     assert coupon["picks"] == []

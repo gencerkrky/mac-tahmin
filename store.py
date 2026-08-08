@@ -171,6 +171,56 @@ def compute_stats(coupons: list) -> dict:
     }
 
 
+# Prior strength for the reliability estimate, in "virtual picks that landed
+# exactly as claimed". A market with RELIABILITY_PRIOR_WEIGHT settled picks is
+# pulled halfway from the neutral 1.0 toward its realized ratio; with far more
+# it is trusted almost fully. This replaces a hard minimum-sample cutoff,
+# which left every market at exactly 1.0 until the threshold was crossed and
+# then let the correction snap on all at once.
+RELIABILITY_PRIOR_WEIGHT = 12
+# Clamp keeps one bad/hot fortnight from swinging picks too hard: a market can
+# be penalized down to 75% of its claimed probability or boosted 5% at most.
+RELIABILITY_CLAMP = (0.75, 1.05)
+
+
+def market_reliability(coupons: list) -> dict:
+    """Per-(market, selection) ratio of realized hit rate vs claimed probability.
+
+    Computed over settled coupons only. A ratio < 1 means the model has been
+    overconfident in that market (e.g. claims 62% "BTTS no" but only 47% hit),
+    so the coupon builder scales its probability down before ranking.
+
+    The raw ratio is shrunk toward 1.0 by sample size, so a market with three
+    settled picks nudges its probability slightly while one with fifty moves
+    it most of the way. Markets with no settled picks are simply absent, which
+    callers read as the neutral 1.0.
+    """
+    counts: dict = {}
+    for c in coupons:
+        if not (c.get("settled_at") or c.get("settled")) or not c.get("picks"):
+            continue
+        for p in c["picks"]:
+            bp = p.get("best_pick") or {}
+            market, sel, prob = bp.get("market"), bp.get("selection"), bp.get("probability")
+            if market is None or sel is None or prob is None or p.get("hit") is None:
+                continue
+            bucket = counts.setdefault((market, sel), {"hits": 0, "claimed": 0.0, "n": 0})
+            bucket["hits"] += 1 if p["hit"] else 0
+            bucket["claimed"] += prob
+            bucket["n"] += 1
+
+    lo, hi = RELIABILITY_CLAMP
+    ratios = {}
+    for key, b in counts.items():
+        if b["claimed"] <= 0:
+            continue
+        raw = (b["hits"] / b["n"]) / (b["claimed"] / b["n"])
+        weight = b["n"] / (b["n"] + RELIABILITY_PRIOR_WEIGHT)
+        shrunk = weight * raw + (1 - weight) * 1.0
+        ratios[key] = round(min(hi, max(lo, shrunk)), 4)
+    return ratios
+
+
 def settle_pending(get_fixtures_fn) -> int:
     """Evaluate unsettled coupons whose matches have finished.
 

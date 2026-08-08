@@ -3,4 +3,7 @@
 __pycache__/
 *.pyc
 data.db
+# Maç deposu: yeniden üretilebilir ve büyür (binary). Actions'ta Pages'ten
+# indirilir, repoda tutulmaz.
+warehouse.db
 public/

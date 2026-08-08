@@ -58,7 +58,7 @@
     <option>3</option><option selected>5</option><option>7</option>
   </select> maç</label>
   <label>Mod: <select id="modeSel">
-    <option value="safe" selected>🛡 Garanti</option>
+    <option value="safe" selected>🛡 En Güvenli</option>
     <option value="balanced">⚖️ Dengeli (1.50+)</option>
     <option value="value">🔥 Cesur (2.00+)</option>
   </select></label>
@@ -257,7 +257,7 @@ document.getElementById("couponBtn").addEventListener("click", async () => {
 });
 
 const historyBox = document.getElementById("history");
-const MODE_LABELS = { safe: "🛡 Garanti", balanced: "⚖️ Dengeli", value: "🔥 Cesur" };
+const MODE_LABELS = { safe: "🛡 En Güvenli", balanced: "⚖️ Dengeli", value: "🔥 Cesur" };
 
 document.getElementById("historyBtn").addEventListener("click", async () => {
   if (historyBox.style.display === "block") { historyBox.style.display = "none"; return; }
@@ -269,7 +269,7 @@ document.getElementById("historyBtn").addEventListener("click", async () => {
       historyBox.innerHTML = '<p class="note">Henüz kayıtlı kupon yok. Bir kupon oluşturun!</p>'; return;
     }
     const ov = h.stats.overall || {};
-    const modeName = { safe:"🛡 Garanti", balanced:"⚖️ Dengeli", value:"🔥 Cesur" };
+    const modeName = { safe:"🛡 En Güvenli", balanced:"⚖️ Dengeli", value:"🔥 Cesur" };
     let summary;
     if (ov.pick_total) {
       const modeLines = Object.entries(h.stats.by_mode || {}).map(([m,b]) =>

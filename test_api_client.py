@@ -162,6 +162,51 @@ def test_get_h2h_averages(monkeypatch):
     assert h2h["away_scored_avg"] == pytest.approx(0.5)   # (1 + 0) / 2
 
 
+def _h2h_venue_payload():
+    """Takım 10'un ev maçları ile deplasman maçları belirgin şekilde farklı."""
+    return {"headToHeadGames": [{
+        "team": {"id": "10"},
+        "events": [
+            # 10 evinde iki kez farklı kazandı → evde 3 gol/maç, 0 yedi
+            {"atVs": "vs", "homeTeamScore": "3", "awayTeamScore": "0"},
+            {"atVs": "vs", "homeTeamScore": "3", "awayTeamScore": "0"},
+            # 10 deplasmanda iki kez farklı kaybetti → orada 0 attı, 4 yedi
+            {"atVs": "@", "homeTeamScore": "4", "awayTeamScore": "0"},
+            {"atVs": "@", "homeTeamScore": "4", "awayTeamScore": "0"},
+        ],
+    }]}
+
+
+def test_get_h2h_prefers_same_venue_meetings(monkeypatch):
+    # Takım 10 bu maçın ev sahibi → yalnız onun ev sahibi olduğu H2H'ler sayılmalı.
+    # Tüm maçlar karışsaydı 1.5-2.0 çıkardı; venue ayrımıyla 3.0-0.0 olmalı.
+    monkeypatch.setattr(api_client.requests, "get",
+                        lambda *a, **k: FakeResponse(_h2h_venue_payload()))
+    h2h = api_client.get_h2h("swe.1", "v1", home_team_id="10")
+    assert h2h["meetings"] == 2
+    assert h2h["home_scored_avg"] == pytest.approx(3.0)
+    assert h2h["away_scored_avg"] == pytest.approx(0.0)
+
+
+def test_get_h2h_same_venue_flips_with_home_side(monkeypatch):
+    # Aynı veri, ama bu kez takım 20 ev sahibi → 10'un deplasman maçları geçerli.
+    monkeypatch.setattr(api_client.requests, "get",
+                        lambda *a, **k: FakeResponse(_h2h_venue_payload()))
+    h2h = api_client.get_h2h("swe.1", "v2", home_team_id="20")
+    assert h2h["meetings"] == 2
+    assert h2h["home_scored_avg"] == pytest.approx(4.0)   # 20 evinde 4 attı
+    assert h2h["away_scored_avg"] == pytest.approx(0.0)
+
+
+def test_get_h2h_falls_back_when_too_few_same_venue(monkeypatch):
+    # Tek ev maçı var (eşik 2) → tüm karşılaşmaların ortalamasına düşer.
+    monkeypatch.setattr(api_client.requests, "get",
+                        lambda *a, **k: FakeResponse(_h2h_payload()))
+    h2h = api_client.get_h2h("swe.1", "v3", home_team_id="10")
+    assert h2h["meetings"] == 2                            # ikisi de sayıldı
+    assert h2h["home_scored_avg"] == pytest.approx(2.5)
+
+
 def test_get_h2h_failure_returns_empty(monkeypatch):
     def boom(*a, **k):
         raise api_client.requests.exceptions.ConnectionError("down")
@@ -189,3 +234,10 @@ def test_get_fixtures_tolerates_single_league_failure(monkeypatch):
     monkeypatch.setattr(api_client.requests, "get", flaky)
     result = get_fixtures("2026-07-05")
     assert len(result) == 2 * (len(api_client.LEAGUES) - 1)
+
+
+def test_fallback_goal_avg_matches_model_prior():
+    # api_client modelden bağımsız kalsın diye sabit kopyalanmıştır;
+    # ikisi ayrışırsa gol beklentisi sessizce tutarsızlaşır.
+    from poisson import LEAGUE_AVG_GOALS
+    assert api_client.FALLBACK_GOAL_AVG == LEAGUE_AVG_GOALS

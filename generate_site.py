@@ -18,11 +18,11 @@ from pathlib import Path
 
 from api_client import (get_basketball_fixtures, get_basketball_form,
                         get_fixtures)
-from app import (COUPON_MIN_PROBABILITY, COUPON_MODES, DEFAULT_COUPON_SIZE,
+from app import (COUPON_MIN_PROBABILITY, COUPON_MODES, COUPON_SIZES,
                  MAX_COUPON_CANDIDATES, UPCOMING_STATUSES,
                  pick_top_predictions, predict_fixture)
 from basketball import predict_basketball
-from store import compute_stats, pick_hit
+from store import compute_stats, market_reliability, pick_hit
 
 # Accuracy window: only coupons from the last N days count toward the shown
 # hit-rate, so the figure reflects the model's recent performance.
@@ -91,12 +91,17 @@ def generate_daily_coupons(today: str, history: list) -> list:
     coupons = []
     upcoming = [f for f in get_fixtures(today) if f["status"] in UPCOMING_STATUSES]
     candidates = upcoming[:MAX_COUPON_CANDIDATES]
+    # Geçmişte modelin abarttığı marketler (ör. ev sahibi kazanır) kupona
+    # girerken cezalandırılır; iyi giden marketler hafif öne geçer.
+    reliability = market_reliability(history)
 
     for mode, min_odds in COUPON_MODES.items():
         analysed = [item for fx in candidates
-                    if (item := predict_fixture(fx, min_odds=min_odds)) is not None]
-        result = pick_top_predictions(analysed, DEFAULT_COUPON_SIZE,
-                                      COUPON_MIN_PROBABILITY[mode])
+                    if (item := predict_fixture(fx, min_odds=min_odds,
+                                                reliability=reliability)) is not None]
+        result = pick_top_predictions(analysed, COUPON_SIZES[mode],
+                                      COUPON_MIN_PROBABILITY[mode],
+                                      reliability=reliability)
         coupon = {
             "date": today,
             "mode": mode,
@@ -113,6 +118,52 @@ def generate_daily_coupons(today: str, history: list) -> list:
     return coupons
 
 
+# Son N maçlık form özeti arayüzde gösterilir; tam log (30 maç) her maç için
+# yayınlanınca data.json gereksiz şişer.
+FORM_SUMMARY_MATCHES = 6
+
+
+def form_summary(form: dict) -> dict:
+    """Arayüzde 'bu tahmin neye dayanıyor' sorusunu yanıtlayan özet.
+
+    Ham log yerine kullanıcının okuyabileceği birkaç sayı: son maçların
+    sonuç dizisi, attığı/yediği gol ortalaması ve iç/dış saha ayrımı.
+    """
+    log = form.get("log") or []
+    recent = log[:FORM_SUMMARY_MATCHES]
+
+    def outcome(m):
+        if m["scored"] > m["conceded"]:
+            return "G"
+        return "B" if m["scored"] == m["conceded"] else "M"
+
+    home = [m for m in log if m["venue"] == "home"]
+    away = [m for m in log if m["venue"] == "away"]
+
+    def avg(matches, key):
+        return round(sum(m[key] for m in matches) / len(matches), 2) if matches else None
+
+    return {
+        "matches": form.get("matches", 0),
+        "scored_avg": form.get("scored_avg"),
+        "conceded_avg": form.get("conceded_avg"),
+        # En yeni maç başta: "GGBMG" gibi okunur bir dizi.
+        "recent_form": "".join(outcome(m) for m in recent),
+        "recent": [{
+            "date": m["date"][:10],
+            "venue": m["venue"],
+            "scored": m["scored"],
+            "conceded": m["conceded"],
+        } for m in recent],
+        "home_scored_avg": avg(home, "scored"),
+        "home_conceded_avg": avg(home, "conceded"),
+        "away_scored_avg": avg(away, "scored"),
+        "away_conceded_avg": avg(away, "conceded"),
+        "home_matches": len(home),
+        "away_matches": len(away),
+    }
+
+
 def build_bulletin(start: date) -> list:
     days = []
     for offset in range(BULLETIN_DAYS):
@@ -125,6 +176,11 @@ def build_bulletin(start: date) -> list:
                 if item is not None:
                     entry["prediction"] = item["prediction"]
                     entry["best_pick"] = item["best_pick"]
+                    # Tahminin dayandığı veri: kullanıcı neye baktığımızı görsün.
+                    entry["form"] = {
+                        "home": form_summary(item["form"]["home"]),
+                        "away": form_summary(item["form"]["away"]),
+                    }
             entries.append(entry)
         days.append({"date": day, "matches": entries})
     return days
